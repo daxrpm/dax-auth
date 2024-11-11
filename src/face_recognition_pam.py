@@ -4,42 +4,50 @@ import time
 import pickle
 import os
 
-# Register a new face
+NUM_FACES = 3
+ENCODINGS_DIR = "data/encodings"
+REGISTER_IMAGES_DIR = "data/register_images"
 
-num_faces = 3
+
+def clear_directory(directory):
+    for file in os.listdir(directory):
+        file_path = os.path.join(directory, file)
+        if os.path.isfile(file_path):
+            os.unlink(file_path)
 
 
 def register_face():
-    # remove past face data
-    os.system("rm data/encodings/*")
-    os.system("rm data/register_images/*")
+    clear_directory(ENCODINGS_DIR)
+    clear_directory(REGISTER_IMAGES_DIR)
 
     video_capture = cv2.VideoCapture(0)
 
-    for i in range(num_faces):
+    for i in range(NUM_FACES):
         result, image = video_capture.read()
-
         if result:
-
-            cv2.imwrite(f"data/register_images/register_face{i}.png", image)
-
+            cv2.imwrite(os.path.join(REGISTER_IMAGES_DIR, f"register_face{i}.png"), image)
         time.sleep(1)
+
+    video_capture.release()
     create_faces_encoding_file()
 
 
 def create_faces_encoding_file():
-    for i in range(num_faces):
-        image_cv2 = cv2.imread(f"data/register_images/register_face{i}.png")
+    for i in range(NUM_FACES):
+        image_path = os.path.join(REGISTER_IMAGES_DIR, f"register_face{i}.png")
+        image_cv2 = cv2.imread(image_path)
         image_rgb = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2RGB)
-        encoding = (face_recognition.face_encodings(image_rgb)[0])
-        with open(f"data/encodings/encoding{i}.pickle", "wb") as file:
+        encoding = face_recognition.face_encodings(image_rgb)[0]
+        encoding_path = os.path.join(ENCODINGS_DIR, f"encoding{i}.pickle")
+        with open(encoding_path, "wb") as file:
             pickle.dump(encoding, file)
 
 
 def read_faces_encoding_file():
     encodings = []
-    for i in range(num_faces):
-        with open(f"data/encodings/encoding{i}.pickle", "rb") as file:
+    for i in range(NUM_FACES):
+        encoding_path = os.path.join(ENCODINGS_DIR, f"encoding{i}.pickle")
+        with open(encoding_path, "rb") as file:
             encoding = pickle.load(file)
             encodings.append(encoding)
     return encodings
@@ -50,11 +58,12 @@ def verify_face():
     video_capture = cv2.VideoCapture(0)
     result, image = video_capture.read()
     if result:
-        image_encoding = face_recognition.face_encodings(image)[0]
-        final_result = face_recognition.compare_faces(
-            encodings, image_encoding)
-
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_encoding = face_recognition.face_encodings(image_rgb)[0]
+        final_result = face_recognition.compare_faces(encodings, image_encoding)
         print(final_result)
+    video_capture.release()
 
 
-verify_face()
+if __name__ == "__main__":
+    verify_face()
