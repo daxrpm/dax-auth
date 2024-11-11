@@ -25,7 +25,8 @@ def register_face():
     for i in range(NUM_FACES):
         result, image = video_capture.read()
         if result:
-            cv2.imwrite(os.path.join(REGISTER_IMAGES_DIR, f"register_face{i}.png"), image)
+            cv2.imwrite(os.path.join(REGISTER_IMAGES_DIR,
+                        f"register_face{i}.png"), image)
         time.sleep(1)
 
     video_capture.release()
@@ -60,7 +61,8 @@ def verify_face():
     if result:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image_encoding = face_recognition.face_encodings(image_rgb)[0]
-        final_result = face_recognition.compare_faces(encodings, image_encoding)
+        final_result = face_recognition.compare_faces(
+            encodings, image_encoding)
         print(final_result)
     video_capture.release()
 
