@@ -17,6 +17,9 @@ def clear_directory(directory):
 
 
 def register_face():
+    # todo create the directories if they don't exist
+    os.makedirs(ENCODINGS_DIR, exist_ok=True)
+    os.makedirs(REGISTER_IMAGES_DIR, exist_ok=True)
     clear_directory(ENCODINGS_DIR)
     clear_directory(REGISTER_IMAGES_DIR)
 
