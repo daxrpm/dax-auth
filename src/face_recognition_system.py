@@ -7,6 +7,7 @@ import os
 NUM_FACES = 3
 ENCODINGS_DIR = "data/encodings"
 REGISTER_IMAGES_DIR = "data/register_images"
+VIDEO_DEVICE = 0
 
 
 def clear_directory(directory):
@@ -23,14 +24,15 @@ def register_face():
     clear_directory(ENCODINGS_DIR)
     clear_directory(REGISTER_IMAGES_DIR)
 
-    video_capture = cv2.VideoCapture(0)
+    video_capture = cv2.VideoCapture(VIDEO_DEVICE)
 
     for i in range(NUM_FACES):
+        time.sleep(1)
+
         result, image = video_capture.read()
         if result:
             cv2.imwrite(os.path.join(REGISTER_IMAGES_DIR,
                         f"register_face{i}.png"), image)
-        time.sleep(1)
 
     video_capture.release()
     create_faces_encoding_file()
@@ -41,10 +43,18 @@ def create_faces_encoding_file():
         image_path = os.path.join(REGISTER_IMAGES_DIR, f"register_face{i}.png")
         image_cv2 = cv2.imread(image_path)
         image_rgb = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2RGB)
-        encoding = face_recognition.face_encodings(image_rgb)[0]
-        encoding_path = os.path.join(ENCODINGS_DIR, f"encoding{i}.pickle")
-        with open(encoding_path, "wb") as file:
-            pickle.dump(encoding, file)
+        # Detect the face using face_recognition
+        try:
+            encoding = face_recognition.face_encodings(image_rgb)[0]
+            encoding_path = os.path.join(ENCODINGS_DIR, f"encoding{i}.pickle")
+            with open(encoding_path, "wb") as file:
+                pickle.dump(encoding, file)
+        except IndexError:
+            print(f"Face {i} not found")
+            continue
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            continue
 
 
 def read_faces_encoding_file():
@@ -58,8 +68,13 @@ def read_faces_encoding_file():
 
 
 def verify_face():
-    encodings = read_faces_encoding_file()
-    video_capture = cv2.VideoCapture(0)
+    try:
+        encodings = read_faces_encoding_file()
+    except FileNotFoundError:
+        print("No faces registered")
+        return
+
+    video_capture = cv2.VideoCapture(VIDEO_DEVICE)
     result, image = video_capture.read()
     if result:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
