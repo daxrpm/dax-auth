@@ -24,6 +24,7 @@ This python app is a facial recognition authentication module for Linux systems.
 2. **Install dependencies:**
 
     ```bash
+    sudo apt install cmake
     sudo apt install python-dev|python-devel
     sudo apt-get update
     sudo apt-get install -y python3 python3-pip libpam0g-dev
