@@ -30,6 +30,10 @@ This python app is a facial recognition authentication module for Linux systems.
     sudo apt-get install -y python3 python3-pip libpam0g-dev
     pip3 install opencv-python dlib
     ```
+    On Fedora:
+    ```bash
+    sudo dnf install cmake make-devel make gcc gcc-c++
+    ```
 
 
 ## Troubleshooting
