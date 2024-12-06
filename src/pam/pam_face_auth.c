@@ -7,8 +7,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-#define PYTHON_SCRIPT_PATH "/home/dax/Escritorio/repos/PAM-FaceAuthentication/src/cli/verify.py"
-#define PYTHON_COMMAND "/home/dax/Escritorio/repos/PAM-FaceAuthentication/.venv/bin/python3"
+#define PYTHON_SCRIPT_PATH "/opt/daxauth/src/cli/verify.py"
+#define PYTHON_COMMAND "/opt/daxauth/.venv/bin/python3"
 
 PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags __attribute__((unused)), int argc __attribute__((unused)), const char **argv __attribute__((unused)))
 {
