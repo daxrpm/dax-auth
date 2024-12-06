@@ -1,3 +1,9 @@
+#! /home/dax/Escritorio/repos/PAM-FaceAuthentication/.venv/bin/python
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+
 import cv2
 import face_recognition
 import logging
@@ -22,28 +28,28 @@ def verify_face() -> None:
         encodings = read_faces_encoding_file()
     except FileNotFoundError:
         logger.error("No faces registered")
-        return
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Error reading face encodings: {e}")
-        return
+        sys.exit(1)
 
     video_device = load_video_device()
     video_capture = cv2.VideoCapture(video_device)
     if not video_capture.isOpened():
         logger.error(f"Failed to open video device {video_device}")
-        return
+        sys.exit(1)
 
     try:
         result, image = video_capture.read()
         if not result:
             logger.error("Failed to capture image from video device")
-            return
+            sys.exit(1)
 
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         face_encodings = face_recognition.face_encodings(image_rgb)
         if not face_encodings:
             logger.warning("No faces detected in the image")
-            return
+            sys.exit(1)
 
         image_encoding = face_encodings[0]
         final_result = face_recognition.compare_faces(
@@ -53,17 +59,18 @@ def verify_face() -> None:
         true_count = final_result.count(True)
         false_count = final_result.count(False)
 
-        logger.info(f"True count: {true_count}, False count: {false_count}")
+        #logger.info(f"True count: {true_count}, False count: {false_count}")
 
         threshold = len(encodings) // 2
         if true_count > threshold:
             logger.info("Face verification successful")
-            print("Face verification result: True")
+            sys.exit(0)
         else:
             logger.info("Face verification failed")
-            print("Face verification result: False")
+            sys.exit(1)
     except Exception as e:
         logger.error(f"Error during face verification: {e}")
+        sys.exit(1)
     finally:
         video_capture.release()
 
