@@ -10,7 +10,7 @@ else
 fi
 echo "Detected distro: $distro"
 case "$distro" in
-    "ubuntu" | "debian")
+    "ubuntu" | "debian" | "kalilinux")
         echo "Installing dependencies for $distro"
         sudo apt-get update
         sudo apt-get install -y cmake make gcc g++ python3 python3-dev python3-pip python3-venv
