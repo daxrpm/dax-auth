@@ -1,57 +1,91 @@
 # PAM-FaceAuthentication
 
-## Overview
+## Introduction
+PAM-FaceAuthentication is a project that provides facial authentication using PAM (Pluggable Authentication Modules). This README provides instructions on how to set up and run the project.
 
-This python app is a facial recognition authentication module for Linux systems. It integrates with Pluggable Authentication Modules (PAM) to provide secure and convenient user authentication using facial recognition technology. ( Under development )
+## Prerequisites
+Before you begin, ensure you have the following installed:
 
-## Requirements
+- cmake
+- make-devel
+- make
+- gcc
+- gcc-c++
+- python-devel
 
-- Linux operating system
-- Python 3.x
-- OpenCV
-- dlib
-- PAM development libraries
+### Installation Instructions
 
-## Installation
+#### For Debian-based systems (using `apt`)
+```sh
+sudo apt update
+src/face_recognition_system.pysudo apt install cmake make gcc g++ python3-dev
+```
 
-1. **Clone the repository:**
+#### For Red Hat-based systems (using `dnf`)
+```sh
+sudo dnf install cmake make-devel make gcc gcc-c++ python3-devel
+```
 
-    ```bash
-    git clone https://github.com/Dax2405/PAM-FaceAuthentication.git
-    cd PAM-FaceAuthentication
+#### For Arch-based systems (using `pacman`)
+```sh
+sudo pacman -S cmake make gcc python
+```
+
+## Setting Up the Python Environment
+
+1. Create a virtual environment using Python 3.13:
+    ```sh
+    python3.13 -m venv .venv
     ```
 
-2. **Install dependencies:**
-
-    On debain based distros:
-    
-    ```bash
-    sudo apt install cmake
-    sudo apt install python-dev|python-devel
-    sudo apt-get update
-    sudo apt-get install -y python3 python3-pip libpam0g-dev
-    pip3 install opencv-python dlib
-    ```
-    On Fedora:
-    ```bash
-    sudo dnf install cmake make-devel make gcc gcc-c++
+2. Activate the virtual environment:
+    ```sh
+    source .venv/bin/activate
     ```
 
+3. Install the required Python packages:
+    ```sh
+    pip install -r requirements.txt
+    ```
 
-## Troubleshooting
+## Usage
 
-- Ensure your camera is working properly.
-- Check the PAM configuration file for errors.
-- Verify that all dependencies are installed correctly.
+To use the face authentication system, you need to run the script with the appropriate command-line arguments. Before running the script, make sure to give it execute permissions using the following command:
+```sh
+chmod +x src/face_recognition_system.py
+```
+
+### Commands
+
+#### Register a New Face
+To register a new face, use the `add` command. This command requires superuser privileges.
+```sh
+sudo ./src/face_recognition_system.py add
+```
+This will prompt you to provide the necessary images for face registration.
+
+#### Clear Face Encodings and Register Images
+To clear all face encodings and registered images, use the `clear` command. This command also requires superuser privileges.
+```sh
+sudo ./src/face_recognition_system.py clear
+```
+This will delete all stored face encodings and registered images.
+
+#### Verify a Face
+To verify a face against the registered faces, use the `verify` command.
+```sh
+./src/face_recognition_system.py verify
+```
+This will compare the provided face image with the registered faces and return the verification result.
+
+
+
 
 ## Contributing
-
-Contributions are welcome! Please fork the repository and submit a pull request.
+If you would like to contribute to this project, please fork the repository and submit a pull request.
 
 ## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the LICENSE file for more details.
 
 ## Contact
-
-For any questions or issues, please open an issue on the [GitHub repository](https://github.com/yourusername/PAM-FaceAuthentication).
+For any questions or issues, please open an issue on the GitHub repository.
