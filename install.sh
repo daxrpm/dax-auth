@@ -8,17 +8,18 @@ else
     echo "Cannot detect the distribution."
     exit 1
 fi
+echo "Detected distro: $distro"
 case "$distro" in
-    "Ubuntu" | "Debian")
+    "ubuntu" | "debian")
         echo "Installing dependencies for $distro"
         sudo apt-get update
         sudo apt-get install -y cmake make gcc g++ python3 python3-dev python3-pip python3-venv
         ;;
-    "Fedora")
+    "fedora")
         echo "Installing dependencies for Fedora"
         sudo dnf install -y cmake make gcc gcc-c++ python3 python3-devel python3-pip
         ;;
-    "Arch")
+    "arch")
         echo "Installing dependencies for Arch"
         sudo pacman -S --noconfirm cmake make gcc python python-pip python-virtualenv
         ;;
