@@ -18,7 +18,7 @@ Before you begin, ensure you have the following installed:
 #### For Debian-based systems (using `apt`)
 ```sh
 sudo apt update
-src/face_recognition_system.pysudo apt install cmake make gcc g++ python3-dev
+sudo apt install cmake make gcc g++ python3-dev
 ```
 
 #### For Red Hat-based systems (using `dnf`)
