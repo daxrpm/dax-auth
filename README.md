@@ -23,6 +23,8 @@ This python app is a facial recognition authentication module for Linux systems.
 
 2. **Install dependencies:**
 
+    On debain based distros:
+    
     ```bash
     sudo apt install cmake
     sudo apt install python-dev|python-devel
