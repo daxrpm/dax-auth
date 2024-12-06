@@ -1,13 +1,14 @@
 #!.venv/bin/python
-import argparse
-import os
 import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+import argparse
 from cli.add import register_face
 from cli.clear import clear_directory
 from cli.verify import verify_face
 from utils.load_config import load_config
-
-
 def load_configuration():
     """Load the configuration file."""
     try:
