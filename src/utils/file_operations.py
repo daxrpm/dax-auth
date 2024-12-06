@@ -6,6 +6,9 @@ logger = logging.getLogger(__name__)
 
 
 def clear_directory(directory):
+    """
+    Clear the contents of a directory used as delete registered face.
+    """
     if not os.path.isdir(directory):
         logger.error(f"The provided path '{directory}' is not a directory.")
         return
