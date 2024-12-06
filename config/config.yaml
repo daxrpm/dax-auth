@@ -1,0 +1,5 @@
+video_device: 0
+num_faces: 3
+encodings_dir: "data/encodings"
+register_images_dir: "data/register_images"
+secret_key_dir: "data/"
