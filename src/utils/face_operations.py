@@ -58,7 +58,7 @@ def read_faces_encoding_file():
             with open(encoding_path, "rb") as encoding_file:
                 encoding = pickle.load(encoding_file)
                 encodings.append(encoding)
-            logger.info(f"Encoding for face {face_index} loaded successfully.")
+            #logger.info(f"Encoding for face {face_index} loaded successfully.")
         except FileNotFoundError:
             logger.warning(f"Encoding file {encoding_path} not found.")
         except Exception as e:
