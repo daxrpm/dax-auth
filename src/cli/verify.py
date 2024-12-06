@@ -4,7 +4,6 @@ import logging
 from utils.face_operations import read_faces_encoding_file
 from utils.load_config import load_config
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -50,6 +49,19 @@ def verify_face() -> None:
         final_result = face_recognition.compare_faces(
             encodings, image_encoding)
         logger.info(f"Face verification result: {final_result}")
+
+        true_count = final_result.count(True)
+        false_count = final_result.count(False)
+
+        logger.info(f"True count: {true_count}, False count: {false_count}")
+
+        threshold = len(encodings) // 2
+        if true_count > threshold:
+            logger.info("Face verification successful")
+            print("Face verification result: True")
+        else:
+            logger.info("Face verification failed")
+            print("Face verification result: False")
     except Exception as e:
         logger.error(f"Error during face verification: {e}")
     finally:
