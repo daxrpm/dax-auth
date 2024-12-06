@@ -1,7 +1,13 @@
 #!/bin/bash
 
 # Detect distro
-distro=$(lsb_release -i | cut -f 2)
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    distro=$ID
+else
+    echo "Cannot detect the distribution."
+    exit 1
+fi
 case "$distro" in
     "Ubuntu" | "Debian")
         echo "Installing dependencies for $distro"
