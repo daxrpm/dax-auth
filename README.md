@@ -85,7 +85,7 @@ This will compare the provided face image with the registered faces and return t
 If you would like to contribute to this project, please fork the repository and submit a pull request.
 
 ## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
+This project is licensed under the GNU General Public License v3.0. See the LICENSE file for more details.
 
 ## Contact
 For any questions or issues, please open an issue on the GitHub repository.
