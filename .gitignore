@@ -167,3 +167,5 @@ cython_debug/
 encoding*.pickle
 register_face*
 register_images*
+*.o
+*.so
