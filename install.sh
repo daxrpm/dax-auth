@@ -43,6 +43,7 @@ sudo /opt/daxauth/.venv/bin/pip install -r requirements.txt
 
 # Copy src files
 sudo cp -r src /opt/daxauth
+sudo cp -r config /opt/daxauth
 
 # Copy script to /usr/local/bin
 sudo cp src/daxauth /usr/local/bin/daxauth
