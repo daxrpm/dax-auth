@@ -1,9 +1,13 @@
 import os
 import time
 import cv2
+import logging
 from utils.file_operations import clear_directory
 from utils.face_operations import create_faces_encoding_file
 from utils.load_config import load_config
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def register_face():
@@ -36,7 +40,7 @@ def register_face():
         # TODO 1: Implement encription of face encodings
         create_faces_encoding_file()
     except Exception as e:
-        print(f"An error occurred during face registration: {e}")
+        logger.error(f"An error occurred during face registration: {e}")
     finally:
         if video_capture.isOpened():
             video_capture.release()
