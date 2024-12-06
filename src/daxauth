@@ -1,0 +1,3 @@
+#!/bin/bash
+source /opt/daxauth/.venv/bin/activate
+python /opt/daxauth/src/face_recognition_system.py "$@"
