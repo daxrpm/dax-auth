@@ -12,15 +12,18 @@ echo "Detected distro: $distro"
 case "$distro" in
     "ubuntu" | "debian" | "kali")
         echo "Installing dependencies for $distro"
+        libSecurityPath="/lib/x86_64-linux-gnu/security"
         sudo apt-get update
         sudo apt-get install -y cmake make gcc g++ python3 python3-dev python3-pip python3-venv libpam0g-dev
         ;;
     "fedora")
         echo "Installing dependencies for Fedora"
+        libSecurityPath="/lib64/security"
         sudo dnf install -y cmake make gcc gcc-c++ python3 python3-devel python3-pip pam-devel
         ;;
     "arch")
         echo "Installing dependencies for Arch"
+        libSecurityPath="/lib/security"
         sudo pacman -S --noconfirm cmake make gcc python python-pip python-virtualenv pam
         ;;
     *)
@@ -56,7 +59,7 @@ cd /opt/daxauth/src/pam
 sudo make
 
 # Copy pam module to /lib/security
-sudo cp pam_face_auth.so /lib64/security/
+sudo cp pam_face_auth.so $libSecurityPath
 
 # Create a backup of the sudo PAM configuration file
 sudo cp /etc/pam.d/sudo /etc/pam.d/sudo.bak
