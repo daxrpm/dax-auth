@@ -6,12 +6,12 @@ config = load_config()
 SECRET_KEY_DIR = config["secret_key"]
 
 key = Fernet.generate_key()
-with open(f"{SECRET_KEY_DIR}secret.key", "wb") as key_file:
+with open(f"{SECRET_KEY_DIR}/secret.key", "wb") as key_file:
     key_file.write(key)
 
 
 def load_key():
-    return open(f"{SECRET_KEY_DIR}secret.key", "rb").read()
+    return open(f"{SECRET_KEY_DIR}/secret.key", "rb").read()
 
 
 def encrypt_data(data):
