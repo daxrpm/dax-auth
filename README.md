@@ -1,6 +1,6 @@
 # DaxAuth - PAM-FaceAuthentication
 
-DaxAuth is a project that provides facial authentication for Linux systems using PAM (Pluggable Authentication Modules). This project is currently under development and may have some security risks, such as the potential to unlock with photos
+DaxAuth is a project that provides facial authentication for Linux systems using PAM (Pluggable Authentication Modules). This project is currently under development and may have some security risks, such as the potential to unlock with photos, also actually tested for some months it seems to have problems working in dark spaces
 
 DaxAuth can be integrated in any system that uses PAM as authentication
 
