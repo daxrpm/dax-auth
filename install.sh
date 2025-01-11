@@ -81,3 +81,11 @@ echo "Updated $FILE:"
 sudo cat "$FILE"
 
 echo "Installation completed successfully."
+
+# Add face to the database
+
+echo "Do you want to add a face to the database? (y/n)"
+read -r response
+if [ "$response" = "y" ]; then
+    sudo daxauth add
+fi
