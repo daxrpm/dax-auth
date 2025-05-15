@@ -61,6 +61,5 @@ def read_faces_encoding_file():
         except FileNotFoundError:
             logger.warning(f"Encoding file {encoding_path} not found.")
         except Exception as e:
-            logger.error(f"An error occurred while reading {
-                         encoding_path}: {e}")
+            logger.error(f"An error occurred while reading {encoding_path}: {e}")
     return encodings
