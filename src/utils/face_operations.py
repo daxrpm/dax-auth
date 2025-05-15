@@ -42,8 +42,7 @@ def create_faces_encoding_file():
                 pickle.dump(encoding, encoding_file)
             logger.info(f"Encoding for face {face_index} saved successfully.")
         except Exception as e:
-            logger.error(f"An error occurred while processing {
-                         image_path}: {e}")
+            logger.error(f"An error occurred while processing {image_path}: {e}")
 
 
 def read_faces_encoding_file():
