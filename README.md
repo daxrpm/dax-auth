@@ -11,7 +11,7 @@ DaxAuth can be integrated in any system that uses PAM as authentication
 **Automatic instalation for:** Debian-based systems, Red Hat-based systems and Arch-based systems
 ### Clone the repo
 ```sh
-git clone https://github.com/Dax2405/dax-auth.git
+git clone https://github.com/daxrpm/dax-auth.git
 ```
 ### Run the instalation script
 ```sh
