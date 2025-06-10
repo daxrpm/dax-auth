@@ -48,7 +48,3 @@ def register_face():
     finally:
         if video_capture.isOpened():
             video_capture.release()
-
-
-if __name__ == "__main__":
-    register_face()
