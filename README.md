@@ -9,14 +9,19 @@ DaxAuth can be integrated in any system that uses PAM as authentication
 ### Automatic instalation
 
 **Automatic instalation for:** Debian-based systems, Red Hat-based systems and Arch-based systems
+
 ### Clone the repo
+
 ```sh
 git clone https://github.com/daxrpm/dax-auth.git
 ```
+
 ### Run the instalation script
+
 ```sh
 cd dax-auth && ./install.sh
 ```
+
  The installation has been tested on Fedora 40-41, Debian, Ubuntu 24.04 - 24.10, and Arch Linux.
 
 ### Manual instalation
@@ -110,35 +115,44 @@ sudo grep -qF "auth sufficient pam_face_auth.so" /etc/pam.d/sudo || sudo sed -i 
 ### Commands
 
 #### Register a New Face
+
 To register a new face, use the `add` command. This command requires superuser privileges.
+
 ```sh
 sudo daxauth add
 ```
+
 This will prompt you to provide the necessary images for face registration.
 
 #### Clear Face Encodings and Register Images
+
 To clear all face encodings and registered images, use the `clear` command. This command also requires superuser privileges.
+
 ```sh
 sudo daxauth clear
 ```
+
 This will delete all stored face encodings and registered images.
 
 #### Verify a Face
+
 To verify a face against the registered faces, use the `verify` command.
+
 ```sh
 daxauth verify
 ```
+
 This will compare the provided face image with the registered faces and return the verification result.
 
-
-
-
 ## Contributing
+
 If you would like to contribute to this project, please fork the repository and submit a pull request.
 
 ## License
+
 This project is licensed under the GNU General Public License v3.0. See the LICENSE file for more details.
 
 ## Contact
+
 For any questions or issues, you can contact me to this mail:
  dax@dax-ec.ru
