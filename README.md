@@ -22,7 +22,7 @@ git clone https://github.com/daxrpm/dax-auth.git
 cd dax-auth && ./install.sh
 ```
 
- The installation has been tested on Fedora 40-41, Debian, Ubuntu 24.04 - 24.10, and Arch Linux.
+ The installation has been tested on Fedora 41-42, Debian, Ubuntu 24.04 - 24.10, and Arch Linux.
 
 ### Manual instalation
 
