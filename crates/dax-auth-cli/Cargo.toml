@@ -13,8 +13,9 @@ name = "dax-auth"
 path = "src/main.rs"
 
 [dependencies]
-dax-auth-proto = { path = "../dax-auth-proto" }
+dax-auth-core   = { path = "../dax-auth-core" }
 dax-auth-camera = { path = "../dax-auth-camera" }
+dax-auth-proto  = { path = "../dax-auth-proto" }
 
 clap = { workspace = true }
 tokio = { workspace = true }
@@ -34,3 +35,6 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 directories = { workspace = true }
 nix = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
