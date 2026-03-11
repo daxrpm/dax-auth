@@ -1,0 +1,34 @@
+#!/bin/sh
+# postrm — Debian post-removal script for dax-auth
+set -e
+
+case "$1" in
+    purge)
+        # Remove config, master key, and data ONLY on purge (not on remove)
+        echo "dax-auth: purging configuration and data..."
+        rm -rf /etc/dax-auth
+        # NOTE: We do NOT remove /var/lib/dax-auth/ automatically —
+        # it contains user biometric enrollments. Print a warning instead.
+        echo ""
+        echo "WARNING: User enrollment data preserved at /var/lib/dax-auth/"
+        echo "         Remove manually if desired: sudo rm -rf /var/lib/dax-auth"
+        ;;
+
+    remove|upgrade|failed-upgrade|disappear|abort-install|abort-upgrade)
+        # Stop and disable the service
+        if command -v systemctl > /dev/null 2>&1; then
+            systemctl stop dax-authd 2>/dev/null || true
+            systemctl disable dax-authd 2>/dev/null || true
+            systemctl daemon-reload
+        fi
+        ;;
+
+    *)
+        echo "postrm called with unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

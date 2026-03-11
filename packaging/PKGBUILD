@@ -1,0 +1,109 @@
+# Maintainer: dax-auth contributors <daxrpm@users.noreply.github.com>
+pkgname=dax-auth
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Facial authentication module for Linux — Windows Hello-style via PAM (pure Rust)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/daxrpm/dax-auth"
+license=('GPL-3.0-or-later')
+depends=('pam' 'v4l-utils' 'onnxruntime')
+makedepends=('cargo' 'git')
+optdepends=(
+    'rocm-opencl-runtime: AMD GPU acceleration'
+    'cuda: NVIDIA GPU acceleration'
+    'intel-compute-runtime: Intel GPU/VPU acceleration (OpenVINO)'
+)
+source=("${pkgname}::git+https://github.com/daxrpm/${pkgname}.git")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "${pkgname}"
+    # Ensure cargo uses a local registry cache
+    export CARGO_HOME="${srcdir}/.cargo"
+    cargo fetch --locked
+}
+
+build() {
+    cd "${pkgname}"
+    export CARGO_HOME="${srcdir}/.cargo"
+    cargo build --release --workspace --frozen
+}
+
+check() {
+    cd "${pkgname}"
+    export CARGO_HOME="${srcdir}/.cargo"
+    # Run unit + integration tests (hardware tests are #[ignore])
+    cargo test --workspace --frozen
+}
+
+package() {
+    cd "${pkgname}"
+
+    # Binaries
+    install -Dm755 target/release/dax-authd   "${pkgdir}/usr/bin/dax-authd"
+    install -Dm755 target/release/dax-auth    "${pkgdir}/usr/bin/dax-auth"
+
+    # PAM module
+    install -Dm644 target/release/libpam_dax_auth.so \
+        "${pkgdir}/usr/lib/security/pam_dax_auth.so"
+
+    # Setup script (used by systemd ExecStartPre)
+    install -Dm755 scripts/setup-runtime-dir.sh \
+        "${pkgdir}/usr/lib/dax-auth/setup-runtime-dir.sh"
+
+    # Default config (noreplace — do not overwrite user config on upgrade)
+    install -Dm640 config/config.toml \
+        "${pkgdir}/etc/dax-auth/config.toml"
+    install -Dm644 packaging/pam-dax-auth.conf \
+        "${pkgdir}/etc/dax-auth/pam-example.conf"
+
+    # Systemd service unit
+    install -Dm644 packaging/dax-authd.service \
+        "${pkgdir}/usr/lib/systemd/system/dax-authd.service"
+
+    # License and docs
+    install -Dm644 LICENSE  "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
+
+post_install() {
+    # Create system user
+    if ! getent passwd dax-auth > /dev/null; then
+        useradd --system --no-create-home \
+                --shell /usr/sbin/nologin \
+                --user-group \
+                --comment "dax-auth facial authentication daemon" \
+                dax-auth
+        usermod -a -G video dax-auth
+    fi
+
+    # Create data directories
+    install -d -m 750 -o dax-auth -g dax-auth /var/lib/dax-auth
+    install -d -m 750 -o dax-auth -g dax-auth /var/lib/dax-auth/models
+    install -d -m 700 -o dax-auth -g dax-auth /var/lib/dax-auth/users
+
+    # Generate master key
+    if [ ! -f /etc/dax-auth/master.key ]; then
+        dd if=/dev/urandom bs=32 count=1 of=/etc/dax-auth/master.key 2>/dev/null
+        chown root:dax-auth /etc/dax-auth/master.key
+        chmod 0640 /etc/dax-auth/master.key
+    fi
+
+    echo ""
+    echo "==> dax-auth: Enable and start the daemon:"
+    echo "      systemctl enable --now dax-authd"
+    echo "==> dax-auth: Enroll your face:"
+    echo "      dax-auth enroll"
+    echo "==> dax-auth: Configure PAM (see /etc/dax-auth/pam-example.conf)"
+    systemctl daemon-reload
+}
+
+post_upgrade() {
+    post_install
+}
+
+pre_remove() {
+    systemctl stop dax-authd 2>/dev/null || true
+    systemctl disable dax-authd 2>/dev/null || true
+    systemctl daemon-reload
+}

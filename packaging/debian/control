@@ -1,0 +1,30 @@
+Source: dax-auth
+Section: admin
+Priority: optional
+Maintainer: dax-auth contributors <daxrpm@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), cargo, libpam0g-dev, libv4l-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/daxrpm/dax-auth
+Vcs-Git: https://github.com/daxrpm/dax-auth.git
+Vcs-Browser: https://github.com/daxrpm/dax-auth
+
+Package: dax-auth
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends},
+         libpam0g (>= 0.79),
+         libv4l-0,
+         libonnxruntime (>= 1.17) | onnxruntime
+Recommends: dax-auth-models
+Description: Facial authentication module for Linux (Windows Hello-style)
+ dax-auth provides Windows Hello-style facial recognition for Linux,
+ integrating with PAM to enable face authentication for login, sudo,
+ lock screens, and screensavers.
+ .
+ Features:
+  * RetinaFace detection + ArcFace R100 recognition (ONNX)
+  * MiniFASNetV2 2D anti-spoofing liveness detection
+  * Hardware IR camera support
+  * Secure (FAR ≤ 1e-4) and paranoid (FAR ≤ 1e-6) modes
+  * GPU acceleration: ROCm, CUDA, OpenVINO (auto-detected)
+  * Pure Rust implementation — no Python runtime required
