@@ -508,11 +508,13 @@ dependencies = [
  "chrono",
  "clap",
  "dax-auth-camera",
+ "dax-auth-core",
  "dax-auth-proto",
  "directories",
  "nix",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -589,6 +591,7 @@ dependencies = [
  "pam-sys",
  "serde",
  "thiserror 2.0.18",
+ "uuid",
  "zeroize",
 ]
 
