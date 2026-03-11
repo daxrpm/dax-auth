@@ -8,10 +8,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# PAM modules MUST be compiled as cdylib (C dynamic library)
+# PAM modules MUST be compiled as cdylib (C dynamic library).
+# rlib is added so that `cargo test` can compile the test harness —
+# it is NOT included in the final .so installation.
 [lib]
 name = "pam_dax_auth"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 dax-auth-proto = { path = "../dax-auth-proto" }
@@ -27,4 +29,5 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
 nix = { workspace = true }
+uuid = { workspace = true }
 libc = "0.2"
