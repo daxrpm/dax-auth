@@ -112,7 +112,7 @@ impl SessionHandler {
                     Some(FailureStage::LivenessFailed) => DenyReason::LivenessCheckFailed,
                     Some(FailureStage::BelowThreshold) => DenyReason::BelowThreshold {
                         score: pr.score.unwrap_or(0.0),
-                        threshold: 0.65, // TODO: read from config
+                        threshold: pr.threshold,
                     },
                     Some(FailureStage::NoEnrolledFaces) => DenyReason::NoEnrolledFaces,
                     Some(FailureStage::CameraError) => DenyReason::CameraUnavailable,

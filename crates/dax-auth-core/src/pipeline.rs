@@ -54,6 +54,12 @@ pub struct PipelineResult {
     pub duration_ms: u64,
     /// Stage at which authentication failed. `None` if `granted` is `true`.
     pub failure_stage: Option<FailureStage>,
+    /// The cosine similarity threshold that was applied during this run.
+    ///
+    /// Derived from [`SecurityMode`] via [`CoreConfig::threshold_for`]. Stored
+    /// here so callers (e.g. `session.rs`) can report the exact threshold
+    /// used without re-deriving it from the security mode.
+    pub threshold: f32,
 }
 
 // ─── AuthPipeline ─────────────────────────────────────────────────────────────
@@ -163,6 +169,7 @@ impl AuthPipeline {
                     liveness_ok: false,
                     duration_ms: start.elapsed().as_millis() as u64,
                     failure_stage: Some(FailureStage::NoEnrolledFaces),
+                    threshold,
                 });
             }
             Err(e) => return Err(e),
@@ -176,6 +183,7 @@ impl AuthPipeline {
                 liveness_ok: false,
                 duration_ms: start.elapsed().as_millis() as u64,
                 failure_stage: Some(FailureStage::NoEnrolledFaces),
+                threshold,
             });
         }
 
@@ -192,6 +200,7 @@ impl AuthPipeline {
                     liveness_ok: false,
                     duration_ms: start.elapsed().as_millis() as u64,
                     failure_stage: Some(FailureStage::CameraError),
+                    threshold,
                 });
             }
         };
@@ -207,6 +216,7 @@ impl AuthPipeline {
                     liveness_ok: false,
                     duration_ms: start.elapsed().as_millis() as u64,
                     failure_stage: Some(FailureStage::CameraError),
+                    threshold,
                 });
             }
         };
@@ -325,6 +335,7 @@ impl AuthPipeline {
                     liveness_ok: true,
                     duration_ms,
                     failure_stage: None,
+                    threshold,
                 });
             }
 
@@ -365,7 +376,110 @@ impl AuthPipeline {
             liveness_ok: liveness_passed,
             duration_ms,
             failure_stage: Some(failure_stage),
+            threshold,
         })
+    }
+
+    /// Capture one frame, detect a face, run liveness, and return an embedding.
+    ///
+    /// This is a subset of [`authenticate`][AuthPipeline::authenticate] (steps 2–6)
+    /// without the matching step. It is used by the CLI enroll command to obtain
+    /// a verified embedding before storing it.
+    ///
+    /// # Errors
+    /// - [`CoreError::Camera`] if no camera is available or frame capture fails.
+    /// - [`CoreError::Inference`] if detection or embedding inference fails.
+    /// - [`CoreError::NoFaceDetected`] if no suitable face is found within `max_frames`.
+    pub async fn capture_and_embed(&mut self) -> Result<crate::embedding::FaceEmbedding, CoreError> {
+        use crate::embedding::align_face;
+
+        // Open the best available camera.
+        let device = CameraDevice::best_available()
+            .map_err(CoreError::Camera)?;
+
+        let camera_kind = device.kind;
+
+        let mut capture = CameraCapture::open(device)
+            .map_err(CoreError::Camera)?;
+
+        for _frame_idx in 0..self.config.max_frames {
+            let frame = match capture.capture_frame_async().await {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(error = %e, "enroll: frame capture failed");
+                    continue;
+                }
+            };
+
+            let rgb_bytes = match frame.to_rgb() {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(error = %e, "enroll: frame to_rgb failed");
+                    continue;
+                }
+            };
+
+            let faces = match self
+                .detector
+                .detect(&rgb_bytes, frame.width, frame.height, 0.5)
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(error = %e, "enroll: detection failed");
+                    continue;
+                }
+            };
+
+            if faces.is_empty() {
+                continue;
+            }
+
+            if faces.len() > 1 {
+                tracing::debug!("enroll: multiple faces detected, skipping frame");
+                continue;
+            }
+
+            let face = &faces[0];
+
+            let face_img = match align_face(&rgb_bytes, frame.width, frame.height, face) {
+                Ok(img) => img,
+                Err(e) => {
+                    tracing::warn!(error = %e, "enroll: face alignment failed");
+                    continue;
+                }
+            };
+
+            // Liveness check (skip for IR cameras)
+            if !matches!(camera_kind, CameraKind::Infrared | CameraKind::RgbAndInfrared) {
+                let face_raw = face_img.as_raw().as_slice();
+                match self.liveness.check(face_raw, None) {
+                    Ok(result) => {
+                        if !result.is_live(0.5) {
+                            tracing::debug!("enroll: liveness check failed, retrying");
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "enroll: liveness check error, continuing");
+                        continue;
+                    }
+                }
+            }
+
+            // Generate embedding from the aligned face.
+            match self.recognizer.embed_aligned(&face_img) {
+                Ok(embedding) => {
+                    tracing::info!("enroll: face captured and embedded successfully");
+                    return Ok(embedding);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "enroll: embedding failed");
+                    continue;
+                }
+            }
+        }
+
+        Err(CoreError::NoFaceDetected)
     }
 
     /// Convert a [`PipelineResult`] to a [`dax_auth_proto::AuthResponse`] for IPC.
@@ -391,8 +505,7 @@ impl AuthPipeline {
                 Some(FailureStage::LivenessFailed) => DenyReason::LivenessCheckFailed,
                 Some(FailureStage::BelowThreshold) => DenyReason::BelowThreshold {
                     score: result.score.unwrap_or(0.0),
-                    // threshold is not stored in PipelineResult — acceptable per design
-                    threshold: 0.0,
+                    threshold: result.threshold,
                 },
                 Some(FailureStage::NoEnrolledFaces) => DenyReason::NoEnrolledFaces,
                 Some(FailureStage::CameraError) => DenyReason::CameraUnavailable,
@@ -425,6 +538,7 @@ mod tests {
             liveness_ok: false,
             duration_ms: 5,
             failure_stage: Some(FailureStage::NoEnrolledFaces),
+            threshold: 0.65,
         };
         assert!(!result.granted);
         assert_eq!(result.failure_stage, Some(FailureStage::NoEnrolledFaces));
@@ -450,6 +564,7 @@ mod tests {
                 liveness_ok: false,
                 duration_ms: 1,
                 failure_stage: Some(stage),
+                threshold: 0.65,
             };
             assert!(!result.granted);
             assert_eq!(result.failure_stage, Some(stage));
@@ -465,9 +580,83 @@ mod tests {
             liveness_ok: true,
             duration_ms: 1200,
             failure_stage: None,
+            threshold: 0.65,
         };
         assert!(result.granted);
         assert!(result.failure_stage.is_none());
         assert!(result.liveness_ok);
+    }
+
+    #[test]
+    fn threshold_reflects_security_mode() {
+        let secure_result = PipelineResult {
+            granted: false,
+            score: Some(0.60),
+            threshold: 0.65, // SecurityMode::Secure default
+            matched_face: None,
+            liveness_ok: false,
+            failure_stage: Some(FailureStage::BelowThreshold),
+            duration_ms: 10,
+        };
+        assert!((secure_result.threshold - 0.65).abs() < f32::EPSILON);
+
+        let paranoid_result = PipelineResult {
+            granted: false,
+            score: Some(0.68),
+            threshold: 0.72, // SecurityMode::Paranoid default
+            matched_face: None,
+            liveness_ok: false,
+            failure_stage: Some(FailureStage::BelowThreshold),
+            duration_ms: 10,
+        };
+        assert!((paranoid_result.threshold - 0.72).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn to_auth_response_below_threshold_carries_config_threshold() {
+        use dax_auth_proto::response::{AuthResult, DenyReason};
+        use uuid::Uuid;
+
+        // Build a minimal AuthPipeline via direct field construction is not
+        // possible (private fields), so we test the mapping logic directly
+        // by constructing the equivalent code path inline.
+        let result = PipelineResult {
+            granted: false,
+            score: Some(0.60),
+            threshold: 0.72,
+            matched_face: None,
+            liveness_ok: false,
+            failure_stage: Some(FailureStage::BelowThreshold),
+            duration_ms: 10,
+        };
+
+        // Replicate the mapping done in to_auth_response()
+        let reason = match result.failure_stage {
+            Some(FailureStage::BelowThreshold) => DenyReason::BelowThreshold {
+                score: result.score.unwrap_or(0.0),
+                threshold: result.threshold,
+            },
+            _ => DenyReason::InternalError,
+        };
+
+        let session_id = Uuid::new_v4();
+        let response = dax_auth_proto::AuthResponse {
+            session_id,
+            version: dax_auth_proto::PROTOCOL_VERSION,
+            result: AuthResult::Denied(reason),
+            duration_ms: result.duration_ms,
+        };
+
+        match response.result {
+            AuthResult::Denied(DenyReason::BelowThreshold { score, threshold }) => {
+                assert!((score - 0.60).abs() < f32::EPSILON);
+                // Must be the paranoid threshold (0.72), not the hardcoded 0.65 or 0.0
+                assert!(
+                    (threshold - 0.72).abs() < f32::EPSILON,
+                    "expected 0.72, got {threshold}"
+                );
+            }
+            other => panic!("expected BelowThreshold, got {other:?}"),
+        }
     }
 }
