@@ -1,0 +1,57 @@
+[package]
+name = "dax-auth-daemon"
+description = "System daemon: manages camera, runs inference, handles PAM IPC via Unix socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dax-authd"
+path = "src/main.rs"
+
+[dependencies]
+dax-auth-proto = { path = "../dax-auth-proto" }
+dax-auth-core = { path = "../dax-auth-core" }
+dax-auth-camera = { path = "../dax-auth-camera" }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+
+# Crypto for embedding storage
+chacha20poly1305 = { workspace = true }
+argon2 = { workspace = true }
+zeroize = { workspace = true }
+rand = { workspace = true }
+
+# System / OS
+nix = { workspace = true }
+config = { workspace = true }
+toml = { workspace = true }
+directories = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-journald = { workspace = true }
+
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { workspace = true }
+
+[features]
+default = []
+cuda = ["dax-auth-core/cuda"]
+rocm = ["dax-auth-core/rocm"]
+openvino = ["dax-auth-core/openvino"]
