@@ -1,0 +1,45 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Warn on unmaintained crates but don't fail
+unmaintained = "warn"
+# Fail on yanked crates
+yanked = "deny"
+
+[licenses]
+# Allowed license identifiers (SPDX)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "OpenSSL",
+]
+# Our own crates are GPL-3.0-or-later — exempt from the allow list
+exceptions = [
+    { name = "dax-auth-proto",  allow = ["GPL-3.0-or-later"] },
+    { name = "dax-auth-camera", allow = ["GPL-3.0-or-later"] },
+    { name = "dax-auth-core",   allow = ["GPL-3.0-or-later"] },
+    { name = "dax-auth-daemon", allow = ["GPL-3.0-or-later"] },
+    { name = "dax-auth-pam",    allow = ["GPL-3.0-or-later"] },
+    { name = "dax-auth-cli",    allow = ["GPL-3.0-or-later"] },
+]
+
+[bans]
+# Forbid duplicate versions of the same crate (warn only — ort brings ndarray 0.17)
+multiple-versions = "warn"
+# Disallow wildcard dependencies
+wildcards = "deny"
+
+[sources]
+# Only allow crates from crates.io and our own local path dependencies
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []

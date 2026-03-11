@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v2, "release/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Faster linking on Linux
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Test ────────────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libpam0g-dev \
+            libv4l-dev \
+            v4l-utils \
+            pkg-config \
+            libclang-dev
+
+      - name: Install Rust toolchain (MSRV)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.80"
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache per OS and Rust version
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: cargo check (all targets)
+        run: cargo check --workspace --all-targets
+
+      - name: cargo test (unit + integration, no hardware)
+        run: cargo test --workspace
+        env:
+          # Skip tests that require camera or ONNX model files
+          RUST_TEST_THREADS: 4
+
+      - name: cargo test (ignored tests skipped via default)
+        run: echo "Hardware tests skipped in CI — run manually with cargo test -- --ignored"
+
+  # ── Clippy ──────────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libpam0g-dev \
+            libv4l-dev \
+            pkg-config \
+            libclang-dev
+
+      - name: Install Rust toolchain with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.80"
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── Format ──────────────────────────────────────────────────────────────────
+  fmt:
+    name: Format
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.80"
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  # ── Security audit ──────────────────────────────────────────────────────────
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-22.04
+    # Run on schedule too — catches new advisories without a push
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+        # Warn only (don't fail CI) — let the team triage manually.
+        # Change to `continue-on-error: false` for stricter policy.
+        continue-on-error: true
+
+  # ── Deny (dependency policy) ─────────────────────────────────────────────────
+  deny:
+    name: Dependency Policy (cargo-deny)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check (licenses + advisories + duplicates)
+        run: cargo deny check
+        continue-on-error: true
+
+  # ── Release build check ──────────────────────────────────────────────────────
+  release-build:
+    name: Release Build
+    runs-on: ubuntu-22.04
+    # Only on pushes to main/release branches (not every PR)
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libpam0g-dev \
+            libv4l-dev \
+            pkg-config \
+            libclang-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.80"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: cargo build --release
+        run: cargo build --release --workspace
+
+      - name: Verify expected artifacts exist
+        run: |
+          test -f target/release/dax-authd     || (echo "MISSING: dax-authd" && exit 1)
+          test -f target/release/dax-auth       || (echo "MISSING: dax-auth CLI" && exit 1)
+          test -f target/release/libpam_dax_auth.so || (echo "MISSING: pam_dax_auth.so" && exit 1)
+          echo "✓ All release artifacts present"
+          ls -lh target/release/dax-authd target/release/dax-auth \
+                 target/release/libpam_dax_auth.so
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dax-auth-linux-x86_64
+          path: |
+            target/release/dax-authd
+            target/release/dax-auth
+            target/release/libpam_dax_auth.so
+          retention-days: 7
