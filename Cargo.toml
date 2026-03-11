@@ -1,0 +1,101 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dax-auth-core",
+    "crates/dax-auth-camera",
+    "crates/dax-auth-daemon",
+    "crates/dax-auth-pam",
+    "crates/dax-auth-cli",
+    "crates/dax-auth-proto",
+]
+
+# Workspace-wide dependency versions — all crates inherit from here
+[workspace.dependencies]
+# ── ML Inference ──────────────────────────────────────────────────────────────
+# ort: ONNX Runtime bindings — production ready rc, supports CUDA/ROCm/CPU
+# VitisAI EP (Ryzen AI NPU) deferred — architecture is ready to enable it
+ort = { version = "=2.0.0-rc.12", default-features = false, features = [
+    "load-dynamic",  # load ONNX Runtime .so at runtime (no static link)
+    # EP features are enabled per-crate via their own [features]
+    # VitisAI EP is excluded — has a compile bug in rc.12, tracked upstream
+] }
+
+# ── Async runtime ─────────────────────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7" }
+
+# ── IPC / Serialization ───────────────────────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = { version = "2", features = ["serde"] }  # binary protocol for IPC (faster than JSON)
+bytes = "1"
+
+# ── Camera (V4L2) ─────────────────────────────────────────────────────────────
+v4l = "0.14"
+
+# ── Cryptography ─────────────────────────────────────────────────────────────
+# chacha20poly1305: AEAD cipher — faster than AES-GCM on CPUs without AES-NI
+chacha20poly1305 = "0.10"
+argon2 = "0.5"         # KDF for key derivation
+zeroize = { version = "1.8", features = ["derive"] }  # ZeroizeOnDrop for secrets
+rand = "0.8"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"          # SHA-256 for model integrity verification and username hashing
+
+# ── PAM bindings ──────────────────────────────────────────────────────────────
+# pam-sys: raw libpam bindings (we build our own safe wrapper on top)
+pam-sys = "0.5"
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+toml = "0.8"
+config = "0.14"        # layered config (file + env vars + defaults)
+
+# ── Logging / Tracing ─────────────────────────────────────────────────────────
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-journald = "0.3"  # journald integration for systemd
+
+# ── Image processing / numeric ────────────────────────────────────────────────
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+ndarray = "0.16"       # n-dimensional arrays for tensor ops
+
+# ── Error handling ────────────────────────────────────────────────────────────
+thiserror = "2"
+anyhow = "1"
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+directories = "5"   # XDG dirs ($HOME/.config, etc.)
+nix = { version = "0.29", features = ["user", "process", "signal"] }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"  # MSRV — must support async traits stable
+license = "GPL-3.0-or-later"
+repository = "https://github.com/daxrpm/dax-auth"
+authors = ["dax-auth contributors"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"          # Link-Time Optimization: thin (faster builds, still fast)
+codegen-units = 1     # Single codegen unit for best optimization
+strip = "symbols"     # Strip debug symbols from release
+
+[profile.dev]
+opt-level = 1         # Small optimizations in dev (faster inference testing)
+debug = true
+
+[profile.release-with-debug]
+inherits = "release"
+strip = "none"
+debug = true
+
+# ── Patches ───────────────────────────────────────────────────────────────────
+# ort rc.12 bug: vitis.rs activates `SessionOptionsAppendExecutionProvider_VitisAI`
+# when `load-dynamic` is enabled, but that symbol is only in OrtApi when feature
+# "api-18" is active in ort-sys. Fixed in vendor/ort by gating on "vitis" only.
+[patch.crates-io]
+ort = { path = "vendor/ort" }
