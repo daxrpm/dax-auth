@@ -1,0 +1,23 @@
+[package]
+name = "dax-auth-camera"
+description = "Camera abstraction layer: V4L2, IR detection, frame acquisition"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+dax-auth-proto = { path = "../dax-auth-proto" }
+v4l = { workspace = true }
+image = { workspace = true }
+ndarray = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
