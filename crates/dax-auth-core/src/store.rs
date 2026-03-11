@@ -53,6 +53,20 @@ struct StoredEmbedding {
 
 // ─── In-memory types ──────────────────────────────────────────────────────────
 
+/// Metadata for a stored face embedding — label and timestamp, no vectors.
+///
+/// Used by `dax-auth list` to display enrollment information without
+/// decrypting or loading the actual embedding data.
+#[derive(Debug)]
+pub struct EmbeddingMeta {
+    /// Zero-based index of this embedding in the stored list.
+    pub index: usize,
+    /// Human-readable label (e.g. `"with glasses"` or `"enrolled_2026-01-15"`).
+    pub label: String,
+    /// Unix timestamp (seconds since epoch) when this was enrolled.
+    pub enrolled_at: u64,
+}
+
 /// A collection of face embeddings for a single user.
 ///
 /// `ZeroizeOnDrop` ensures embedding data is zeroed when this struct is dropped,
@@ -204,6 +218,195 @@ impl FaceStore {
         }
         tracing::debug!(username_hash = %username_hash(username), "enrollments cleared");
         Ok(())
+    }
+
+    /// Return metadata (label, enrolled_at) for all stored embeddings.
+    ///
+    /// Returns an empty `Vec` if the user has no enrolled faces
+    /// (this is NOT an error — callers can distinguish "none" from errors).
+    /// The actual embedding vectors are NOT loaded — only labels and timestamps.
+    ///
+    /// # Errors
+    /// Returns [`CoreError::Store`] on I/O or decryption failure.
+    pub fn list_metadata(&self, username: &str) -> Result<Vec<EmbeddingMeta>, CoreError> {
+        let path = embeddings_path(&self.base_dir, username);
+
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let data =
+            std::fs::read(&path).map_err(|e| CoreError::Store(format!("read error: {e}")))?;
+
+        let user_key = derive_user_key(&self.master_key, username);
+        let plaintext = decrypt_data(&user_key, &data)?;
+
+        let (stored, _): (Vec<StoredEmbedding>, _) = decode_from_slice(&plaintext, standard())
+            .map_err(|e| CoreError::Store(format!("deserialize error: {e}")))?;
+
+        let metas = stored
+            .into_iter()
+            .enumerate()
+            .map(|(index, s)| EmbeddingMeta {
+                index,
+                label: s.label,
+                enrolled_at: s.enrolled_at,
+            })
+            .collect();
+
+        Ok(metas)
+    }
+
+    /// Remove the embedding at `index` (0-based).
+    ///
+    /// Remaining embeddings are preserved and re-encrypted atomically.
+    /// After removal, indices of embeddings that followed `index` are decremented.
+    ///
+    /// # Errors
+    /// - [`CoreError::Store`] if `index` is out of range or on I/O failure.
+    pub fn remove(&self, username: &str, index: usize) -> Result<(), CoreError> {
+        let path = embeddings_path(&self.base_dir, username);
+
+        if !path.exists() {
+            return Err(CoreError::Store(format!(
+                "no enrolled faces for user (index {index} out of range)"
+            )));
+        }
+
+        let data =
+            std::fs::read(&path).map_err(|e| CoreError::Store(format!("read error: {e}")))?;
+
+        let user_key = derive_user_key(&self.master_key, username);
+        let plaintext = decrypt_data(&user_key, &data)?;
+
+        let (mut stored, _): (Vec<StoredEmbedding>, _) = decode_from_slice(&plaintext, standard())
+            .map_err(|e| CoreError::Store(format!("deserialize error: {e}")))?;
+
+        if index >= stored.len() {
+            return Err(CoreError::Store(format!(
+                "index {index} out of range (0–{})",
+                stored.len().saturating_sub(1)
+            )));
+        }
+
+        stored.remove(index);
+
+        if stored.is_empty() {
+            // Remove the entire user directory — same as clear().
+            let dir = user_dir_path(&self.base_dir, username);
+            std::fs::remove_dir_all(&dir)
+                .map_err(|e| CoreError::Store(format!("cannot remove user dir: {e}")))?;
+        } else {
+            let user_dir = user_dir_path(&self.base_dir, username);
+            self.write_embeddings(username, &user_dir, &stored)?;
+        }
+
+        tracing::debug!(
+            username_hash = %username_hash(username),
+            index,
+            "embedding removed"
+        );
+
+        Ok(())
+    }
+
+    /// Return the number of currently enrolled faces.
+    ///
+    /// Returns `0` if the user has no enrolled faces (NOT an error).
+    ///
+    /// # Errors
+    /// Returns [`CoreError::Store`] on I/O or decryption failure.
+    pub fn count(&self, username: &str) -> Result<usize, CoreError> {
+        let path = embeddings_path(&self.base_dir, username);
+
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let data =
+            std::fs::read(&path).map_err(|e| CoreError::Store(format!("read error: {e}")))?;
+
+        let user_key = derive_user_key(&self.master_key, username);
+        let plaintext = decrypt_data(&user_key, &data)?;
+
+        let (stored, _): (Vec<StoredEmbedding>, _) = decode_from_slice(&plaintext, standard())
+            .map_err(|e| CoreError::Store(format!("deserialize error: {e}")))?;
+
+        Ok(stored.len())
+    }
+
+    /// Enroll a face with an explicit human-readable label.
+    ///
+    /// The label is stored alongside the embedding and shown in `dax-auth list`.
+    /// If `label` is `None`, defaults to `"enrolled_YYYY-MM-DDTHH-MM-SS"`.
+    ///
+    /// Returns the new total count of enrolled faces after the insertion.
+    ///
+    /// # Errors
+    /// Returns [`CoreError::Store`] if the write fails.
+    pub fn enroll_with_label(
+        &self,
+        username: &str,
+        embedding: FaceEmbedding,
+        label: Option<String>,
+    ) -> Result<usize, CoreError> {
+        let user_dir = user_dir_path(&self.base_dir, username);
+        std::fs::create_dir_all(&user_dir)
+            .map_err(|e| CoreError::Store(format!("cannot create user dir: {e}")))?;
+
+        // Load existing records preserving all metadata (labels, timestamps).
+        let mut stored: Vec<StoredEmbedding> = match self.load_stored_raw(username) {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
+
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let enrolled_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let resolved_label = label.unwrap_or_else(|| {
+            format!(
+                "enrolled_{}",
+                chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S")
+            )
+        });
+
+        stored.push(StoredEmbedding {
+            label: resolved_label,
+            values: embedding.data.clone(),
+            enrolled_at,
+        });
+
+        let count = stored.len();
+        self.write_embeddings(username, &user_dir, &stored)?;
+        Ok(count)
+    }
+
+    /// Load the raw `StoredEmbedding` list for a user (including labels and timestamps).
+    ///
+    /// Returns an empty `Vec` if the user has no enrolled faces.
+    ///
+    /// # Errors
+    /// Returns [`CoreError::Store`] on I/O or decryption failure.
+    fn load_stored_raw(&self, username: &str) -> Result<Vec<StoredEmbedding>, CoreError> {
+        let path = embeddings_path(&self.base_dir, username);
+
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let data =
+            std::fs::read(&path).map_err(|e| CoreError::Store(format!("read error: {e}")))?;
+
+        let user_key = derive_user_key(&self.master_key, username);
+        let plaintext = decrypt_data(&user_key, &data)?;
+
+        let (stored, _): (Vec<StoredEmbedding>, _) = decode_from_slice(&plaintext, standard())
+            .map_err(|e| CoreError::Store(format!("deserialize error: {e}")))?;
+
+        Ok(stored)
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -591,6 +794,149 @@ mod tests {
             sim < 0.0,
             "different users should have different embeddings, sim={sim}"
         );
+    }
+
+    // ── EmbeddingMeta / list_metadata ─────────────────────────────────────────
+
+    #[test]
+    fn test_list_metadata_no_faces_returns_empty() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+        // Must return Ok(empty vec), not an error.
+        let metas = store.list_metadata("nobody").expect("list_metadata");
+        assert!(metas.is_empty(), "unknown user should have empty metadata");
+    }
+
+    #[test]
+    fn test_list_metadata_returns_correct_labels() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+
+        store
+            .enroll_with_label("alice", make_embedding(0.1), Some("first face".into()))
+            .expect("enroll first");
+        store
+            .enroll_with_label("alice", make_embedding(0.2), Some("with glasses".into()))
+            .expect("enroll second");
+
+        let metas = store.list_metadata("alice").expect("list_metadata");
+        assert_eq!(metas.len(), 2);
+        assert_eq!(metas[0].label, "first face");
+        assert_eq!(metas[0].index, 0);
+        assert_eq!(metas[1].label, "with glasses");
+        assert_eq!(metas[1].index, 1);
+    }
+
+    // ── enroll_with_label ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_enroll_with_label_preserves_label() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+        let count = store
+            .enroll_with_label("alice", make_embedding(0.5), Some("custom".into()))
+            .expect("enroll_with_label");
+        assert_eq!(count, 1);
+        let metas = store.list_metadata("alice").expect("list_metadata");
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].label, "custom");
+    }
+
+    #[test]
+    fn test_enroll_with_label_default_label_when_none() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+        store
+            .enroll_with_label("alice", make_embedding(0.5), None)
+            .expect("enroll_with_label");
+        let metas = store.list_metadata("alice").expect("list_metadata");
+        assert_eq!(metas.len(), 1);
+        // Default label should start with "enrolled_"
+        assert!(
+            metas[0].label.starts_with("enrolled_"),
+            "default label should start with 'enrolled_', got '{}'",
+            metas[0].label
+        );
+    }
+
+    // ── count ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_count_returns_correct_count() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+
+        assert_eq!(store.count("alice").expect("count"), 0);
+
+        store
+            .enroll_with_label("alice", make_embedding(0.1), Some("a".into()))
+            .expect("enroll 1");
+        assert_eq!(store.count("alice").expect("count"), 1);
+
+        store
+            .enroll_with_label("alice", make_embedding(0.2), Some("b".into()))
+            .expect("enroll 2");
+        store
+            .enroll_with_label("alice", make_embedding(0.3), Some("c".into()))
+            .expect("enroll 3");
+
+        assert_eq!(store.count("alice").expect("count"), 3);
+    }
+
+    // ── remove ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_remove_middle_index() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+
+        store
+            .enroll_with_label("alice", make_embedding(0.1), Some("first".into()))
+            .expect("enroll 0");
+        store
+            .enroll_with_label("alice", make_embedding(0.2), Some("second".into()))
+            .expect("enroll 1");
+        store
+            .enroll_with_label("alice", make_embedding(0.3), Some("third".into()))
+            .expect("enroll 2");
+
+        // Remove middle entry
+        store.remove("alice", 1).expect("remove index 1");
+
+        let metas = store.list_metadata("alice").expect("list_metadata");
+        assert_eq!(metas.len(), 2, "should have 2 remaining after remove");
+        assert_eq!(metas[0].label, "first", "index 0 should be 'first'");
+        assert_eq!(
+            metas[1].label, "third",
+            "index 1 should be 'third' (renumbered)"
+        );
+    }
+
+    #[test]
+    fn test_remove_out_of_range_returns_error() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+
+        store
+            .enroll_with_label("alice", make_embedding(0.1), Some("only".into()))
+            .expect("enroll");
+
+        let result = store.remove("alice", 99);
+        assert!(result.is_err(), "out-of-range index should return error");
+    }
+
+    #[test]
+    fn test_remove_all_clears_user_dir() {
+        let dir = TempDir::new().expect("tmpdir");
+        let store = make_store(&dir);
+
+        store
+            .enroll_with_label("alice", make_embedding(0.5), Some("solo".into()))
+            .expect("enroll");
+        store.remove("alice", 0).expect("remove last");
+
+        // count must be 0 after removing the only face
+        assert_eq!(store.count("alice").expect("count after remove"), 0);
     }
 
     // ── Path helpers ──────────────────────────────────────────────────────────
