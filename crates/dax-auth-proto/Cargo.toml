@@ -1,0 +1,18 @@
+[package]
+name = "dax-auth-proto"
+description = "IPC protocol types and codec shared between PAM module and daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+zeroize = { workspace = true }
