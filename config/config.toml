@@ -1,0 +1,89 @@
+# dax-auth default configuration
+# Install to: /etc/dax-auth/config.toml
+# All paths can be overridden here.
+
+# ── Security ──────────────────────────────────────────────────────────────────
+[security]
+# Authentication mode:
+#   "secure"   — FAR ≤ 1e-4, similarity threshold 0.65 (recommended)
+#   "paranoid" — FAR ≤ 1e-6, similarity threshold 0.72 (stricter, more false rejections)
+mode = "secure"
+
+# Maximum authentication attempts before falling back to password
+max_attempts = 3
+
+# Timeout for each authentication attempt (seconds)
+auth_timeout_secs = 30
+
+# ── Liveness detection ────────────────────────────────────────────────────────
+[liveness]
+# Liveness detection strategy:
+#   "auto"     — IR depth if IR camera detected, else 2D anti-spoofing
+#   "ir"       — Force IR depth liveness (requires IR camera)
+#   "2d"       — Force 2D anti-spoofing (MiniFASNetV2, works with any RGB camera)
+#   "disabled" — DANGEROUS: disables liveness check entirely (for testing only)
+strategy = "auto"
+
+# Minimum liveness score to pass (0.0–1.0). Default: 0.5
+liveness_threshold = 0.5
+
+# ── Camera ────────────────────────────────────────────────────────────────────
+[camera]
+# V4L2 device path. "auto" = try to detect IR camera first, then RGB
+device = "auto"
+
+# Frame capture resolution
+width  = 1280
+height = 720
+
+# Frames per second during auth (lower = less CPU, higher = faster response)
+fps = 30
+
+# Maximum frames to capture per auth attempt before giving up
+max_frames = 90  # 3 seconds at 30fps
+
+# ── Models ────────────────────────────────────────────────────────────────────
+[models]
+# Directory containing ONNX model files
+# Run: scripts/download_models.sh to fetch them
+dir = "/var/lib/dax-auth/models"
+
+# Detection model (RetinaFace)
+detection_model = "retinaface_10g.onnx"
+
+# Recognition model (ArcFace R100)
+recognition_model = "arcface_r100.onnx"
+
+# Anti-spoofing model (MiniFASNetV2) — used when liveness.strategy is "2d" or "auto"
+liveness_model = "minifasnetv2.onnx"
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+[storage]
+# Directory for encrypted face embeddings
+# Per-user subdirectories: {dir}/{sha256(username)}/
+dir = "/var/lib/dax-auth/users"
+
+# Maximum enrolled faces per user
+max_faces_per_user = 10
+
+# ── Execution providers ───────────────────────────────────────────────────────
+[inference]
+# Execution provider priority order (first available wins).
+# Supported values: "rocm", "cuda", "openvino", "cpu"
+# "cpu" should always be last as the fallback.
+execution_providers = ["rocm", "cuda", "openvino", "cpu"]
+
+# Number of intra-op threads for CPU inference (0 = auto-detect from CPU cores)
+intra_threads = 0
+
+# ── Daemon ────────────────────────────────────────────────────────────────────
+[daemon]
+# Unix socket path — must match the path in the PAM module
+socket_path = "/run/dax-auth/daemon.sock"
+
+# Log level: "trace", "debug", "info", "warn", "error"
+log_level = "info"
+
+# Whether to send logs to journald (requires systemd environment)
+# Falls back to stderr if journald is unavailable
+journald = true

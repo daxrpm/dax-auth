@@ -1,0 +1,69 @@
+[Unit]
+Description=dax-auth facial authentication daemon
+Documentation=https://github.com/daxrpm/dax-auth
+# Must start before any display manager (GDM, SDDM, LightDM)
+Before=display-manager.service gdm.service sddm.service lightdm.service
+# Also before systemd-user-sessions (covers TTY login via PAM)
+Before=systemd-user-sessions.service
+After=local-fs.target
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+
+# Run as dedicated system user (not root)
+User=dax-auth
+Group=dax-auth
+
+# Camera access requires video group membership
+SupplementaryGroups=video
+
+ExecStartPre=/usr/lib/dax-auth/setup-runtime-dir.sh
+ExecStart=/usr/bin/dax-authd --config /etc/dax-auth/config.toml
+ExecStopPost=/bin/rm -f /run/dax-auth/daemon.sock
+
+# Restart on failure (camera errors, model load failures)
+Restart=on-failure
+RestartSec=3s
+# Don't restart if it fails immediately (misconfiguration)
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# ── Hardening ─────────────────────────────────────────────────────────────────
+# Filesystem isolation
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/dax-auth /var/lib/dax-auth
+
+# Process isolation
+NoNewPrivileges=true
+PrivateDevices=false   # needs /dev/video* (camera)
+DeviceAllow=/dev/video* rw
+DeviceAllow=char-v4l rw
+
+# Capabilities — none needed (daemon doesn't need root caps)
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Network — daemon has no network access
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+
+# System call filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+# Runtime directory
+RuntimeDirectory=dax-auth
+RuntimeDirectoryMode=0750
+
+# State directory
+StateDirectory=dax-auth
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

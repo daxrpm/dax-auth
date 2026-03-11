@@ -1,0 +1,12 @@
+project: dax-auth
+description: Production-grade facial authentication module for Linux (Rust + PAM)
+
+artifact_store:
+  mode: openspec   # use openspec/ directory for SDD artifacts
+  specs_dir: openspec/specs
+  changes_dir: openspec/changes
+  archive_dir: openspec/changes/archive
+
+defaults:
+  language: rust
+  security_mode: paranoid  # be strict in specs and design
