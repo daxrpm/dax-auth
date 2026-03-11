@@ -1,0 +1,49 @@
+[package]
+name = "dax-auth-core"
+description = "ML inference engine: face detection, recognition, anti-spoofing pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+dax-auth-proto = { path = "../dax-auth-proto" }
+dax-auth-camera = { path = "../dax-auth-camera" }
+
+# ONNX Runtime — execution providers enabled via features
+# CPU is always available. GPU EPs are opt-in via cargo features.
+ort = { workspace = true }
+
+image = { workspace = true }
+ndarray = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+zeroize = { workspace = true }
+sha2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+argon2 = { workspace = true }
+bincode = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+default = ["cpu"]
+cpu = []
+# CUDA EP — requires CUDA 12.x + cuDNN installed on system
+cuda = ["ort/cuda"]
+# ROCm EP — requires ROCm 6.x installed on system
+rocm = ["ort/rocm"]
+# OpenVINO EP — Intel CPU/GPU/VPU acceleration
+openvino = ["ort/openvino"]
+# VitisAI EP — AMD Ryzen AI NPU (XDNA/XDNA2) — deferred, architecture ready
+# vitisai = ["ort/vitis-ai"]  # uncomment when VitisAI EP is stable in ort
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
