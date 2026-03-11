@@ -1,0 +1,30 @@
+[package]
+name = "dax-auth-pam"
+description = "PAM module (.so): minimal bridge between PAM and dax-authd daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# PAM modules MUST be compiled as cdylib (C dynamic library)
+[lib]
+name = "pam_dax_auth"
+crate-type = ["cdylib"]
+
+[dependencies]
+dax-auth-proto = { path = "../dax-auth-proto" }
+
+# PAM raw bindings
+pam-sys = { workspace = true }
+
+# Minimal deps — this .so must be tiny and fast to load
+# NO tokio here — we use blocking I/O for the Unix socket call
+serde = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+nix = { workspace = true }
+libc = "0.2"
