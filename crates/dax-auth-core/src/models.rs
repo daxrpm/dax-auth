@@ -268,7 +268,9 @@ fn load_onnx_session(
 
     Session::builder()
         .map_err(|e| CoreError::Inference(e.to_string()))?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
+        // ORT_ENABLE_ALL (99) — use All instead of Level3 (ORT_ENABLE_LAYOUT=3)
+        // which is rejected by ORT 1.21 as an invalid optimization level.
+        .with_optimization_level(GraphOptimizationLevel::All)
         .map_err(|e| CoreError::Inference(e.to_string()))?
         .with_intra_threads(threads)
         .map_err(|e| CoreError::Inference(e.to_string()))?

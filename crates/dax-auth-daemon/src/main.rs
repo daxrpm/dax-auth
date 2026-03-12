@@ -46,7 +46,8 @@ async fn main() {
     );
 
     if let Err(e) = run().await {
-        error!(error = %e, "daemon exited with error");
+        // Use {e:#} to print the full anyhow error chain (cause-by-cause).
+        error!(error = %format!("{e:#}"), "daemon exited with error");
         std::process::exit(1);
     }
 }
