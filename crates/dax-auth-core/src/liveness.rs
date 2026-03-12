@@ -55,6 +55,15 @@ impl LivenessDetector {
         }
     }
 
+    /// Returns `true` if a 2D anti-spoofing model session is loaded.
+    ///
+    /// When `false`, the pipeline should skip the liveness check entirely
+    /// (degraded-security mode) rather than treating the missing model as a failure.
+    #[must_use]
+    pub fn has_model(&self) -> bool {
+        self.anti_spoof_session.is_some()
+    }
+
     /// Run liveness detection on the face region.
     ///
     /// For RGB cameras, uses MiniFASNetV2 (2D anti-spoofing).

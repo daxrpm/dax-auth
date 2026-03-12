@@ -106,10 +106,9 @@ impl AuthPipeline {
         let registry = ModelRegistry::load(&config)?;
 
         let detector = FaceDetector::new(registry.detector);
-        // Use Rgb as the default camera kind for the liveness detector.
-        // The authenticate() method will open the real camera and the liveness
-        // detector is flexible enough to handle the actual frame regardless.
-        let liveness = LivenessDetector::new(CameraKind::Rgb, Some(registry.anti_spoof));
+        // registry.anti_spoof is None when the model file is absent or disabled.
+        // LivenessDetector handles None by returning Live with confidence=1.0.
+        let liveness = LivenessDetector::new(CameraKind::Rgb, registry.anti_spoof);
         let recognizer = FaceRecognizer::new(registry.recognizer);
 
         // Derive the storage directory from the models directory.
@@ -279,22 +278,29 @@ impl AuthPipeline {
 
             // Liveness check (skip for IR cameras — not supported in Phase 1)
             if !matches!(camera_kind, CameraKind::Infrared | CameraKind::RgbAndInfrared) {
-                let face_raw = face_img.as_raw().as_slice();
-                match self.liveness.check(face_raw, None) {
-                    Ok(result) => {
-                        if !result.is_live(0.5) {
-                            tracing::debug!("liveness check failed, continuing");
+                if self.liveness.has_model() {
+                    let face_raw = face_img.as_raw().as_slice();
+                    match self.liveness.check(face_raw, None) {
+                        Ok(result) => {
+                            if !result.is_live(0.5) {
+                                tracing::debug!("liveness check failed, continuing");
+                                last_failure = FailureStage::LivenessFailed;
+                                continue;
+                            }
+                            liveness_passed = true;
+                            tracing::debug!(stage = "liveness", "liveness check passed");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "liveness check error, continuing");
                             last_failure = FailureStage::LivenessFailed;
                             continue;
                         }
-                        liveness_passed = true;
-                        tracing::debug!(stage = "liveness", "liveness check passed");
                     }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "liveness check error, continuing");
-                        last_failure = FailureStage::LivenessFailed;
-                        continue;
-                    }
+                } else {
+                    // No liveness model loaded — skip check (degraded-security mode).
+                    // A warning is already emitted at daemon startup by ModelRegistry::load().
+                    tracing::debug!("liveness model not loaded — skipping check");
+                    liveness_passed = true;
                 }
             } else {
                 // IR camera — skip liveness for Phase 1
@@ -451,18 +457,22 @@ impl AuthPipeline {
 
             // Liveness check (skip for IR cameras)
             if !matches!(camera_kind, CameraKind::Infrared | CameraKind::RgbAndInfrared) {
-                let face_raw = face_img.as_raw().as_slice();
-                match self.liveness.check(face_raw, None) {
-                    Ok(result) => {
-                        if !result.is_live(0.5) {
-                            tracing::debug!("enroll: liveness check failed, retrying");
+                if self.liveness.has_model() {
+                    let face_raw = face_img.as_raw().as_slice();
+                    match self.liveness.check(face_raw, None) {
+                        Ok(result) => {
+                            if !result.is_live(0.5) {
+                                tracing::debug!("enroll: liveness check failed, retrying");
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "enroll: liveness check error, continuing");
                             continue;
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "enroll: liveness check error, continuing");
-                        continue;
-                    }
+                } else {
+                    tracing::debug!("enroll: liveness model not loaded — skipping check");
                 }
             }
 

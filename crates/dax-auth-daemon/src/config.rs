@@ -13,9 +13,9 @@
 //!
 //! [models]
 //! dir = "/var/lib/dax-auth/models"
-//! detection_model  = "retinaface_10g.onnx"
-//! recognition_model = "arcface_r100.onnx"
-//! liveness_model   = "minifasnetv2.onnx"
+//! detection_model  = "det_10g.onnx"
+//! recognition_model = "w600k_r50.onnx"
+//! liveness_model   = "minifasnet_v2.onnx"
 //!
 //! [camera]
 //! fps = 30
@@ -90,13 +90,13 @@ fn default_models_dir() -> String {
     "/var/lib/dax-auth/models".into()
 }
 fn default_detection_model() -> String {
-    "retinaface_10g.onnx".into()
+    "det_10g.onnx".into()
 }
 fn default_recognition_model() -> String {
-    "arcface_r100.onnx".into()
+    "w600k_r50.onnx".into()
 }
 fn default_liveness_model() -> String {
-    "minifasnetv2.onnx".into()
+    "minifasnet_v2.onnx".into()
 }
 
 impl Default for RawModelsConfig {

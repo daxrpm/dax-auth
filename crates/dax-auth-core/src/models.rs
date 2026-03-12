@@ -74,12 +74,13 @@ pub const ANTI_SPOOF_MODELS: &[ModelInfo] = &[ModelInfo {
 /// Loaded eagerly at daemon startup — if any model is missing or corrupt,
 /// the daemon fails immediately rather than on the first auth attempt.
 pub struct ModelRegistry {
-    /// Loaded RetinaFace detection session.
+    /// Loaded SCRFD detection session.
     pub detector: Session,
     /// Loaded ArcFace recognition session.
     pub recognizer: Session,
     /// Loaded MiniFASNetV2 anti-spoofing session.
-    pub anti_spoof: Session,
+    /// `None` when liveness strategy is "disabled" or the model file is absent.
+    pub anti_spoof: Option<Session>,
 }
 
 impl ModelRegistry {
@@ -145,27 +146,37 @@ impl ModelRegistry {
             "recognition model loaded"
         );
 
-        // ── Anti-spoof (MiniFASNetV2) ─────────────────────────────────────────
+        // ── Anti-spoof (MiniFASNetV2) — optional ─────────────────────────────
+        // If the model filename is "disabled" or the file doesn't exist,
+        // skip loading. The pipeline will pass liveness automatically.
         let anti_spoof_path = config.models_dir.join(&config.anti_spoof_model);
-        check_file_exists(&anti_spoof_path)?;
-        if let Some(info) = ANTI_SPOOF_MODELS
-            .iter()
-            .find(|m| m.filename == config.anti_spoof_model)
-        {
-            if let Some(expected_hash) = info.sha256 {
-                verify_sha256(&anti_spoof_path, expected_hash)?;
+        let anti_spoof = if config.anti_spoof_model == "disabled" {
+            info!("anti-spoofing disabled via config");
+            None
+        } else if !anti_spoof_path.exists() {
+            tracing::warn!(
+                path = %anti_spoof_path.display(),
+                "anti-spoofing model not found — liveness check will be skipped (WARNING: reduced security)"
+            );
+            None
+        } else {
+            if let Some(info) = ANTI_SPOOF_MODELS
+                .iter()
+                .find(|m| m.filename == config.anti_spoof_model)
+            {
+                if let Some(expected_hash) = info.sha256 {
+                    verify_sha256(&anti_spoof_path, expected_hash)?;
+                }
             }
-        }
-        info!(
-            path = %anti_spoof_path.display(),
-            "loading anti-spoofing model (MiniFASNetV2)"
-        );
-        let anti_spoof = load_onnx_session(&anti_spoof_path, &eps, threads)?;
-        info!(
-            inputs = ?anti_spoof.inputs().iter().map(|i| i.name()).collect::<Vec<_>>(),
-            outputs = ?anti_spoof.outputs().iter().map(|o| o.name()).collect::<Vec<_>>(),
-            "anti-spoofing model loaded"
-        );
+            info!(path = %anti_spoof_path.display(), "loading anti-spoofing model (MiniFASNetV2)");
+            let session = load_onnx_session(&anti_spoof_path, &eps, threads)?;
+            info!(
+                inputs = ?session.inputs().iter().map(|i| i.name()).collect::<Vec<_>>(),
+                outputs = ?session.outputs().iter().map(|o| o.name()).collect::<Vec<_>>(),
+                "anti-spoofing model loaded"
+            );
+            Some(session)
+        };
 
         Ok(Self {
             detector,
