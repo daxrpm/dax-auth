@@ -194,7 +194,13 @@ impl CameraCapture {
 
 /// Try to negotiate a pixel format with the V4L2 driver.
 ///
-/// Preference order: YUYV → MJPEG.
+/// Preference order: YUYV → MJPEG, tried at multiple resolutions.
+///
+/// We attempt each format at decreasing resolutions: the device's reported
+/// best resolution, then 1280×720, then 640×480. This is necessary because
+/// some webcams (e.g. Sonix) only accept YUYV at ≤640×480 while MJPEG works
+/// at higher resolutions. Taking the device's max resolution and requesting
+/// YUYV at that resolution causes the driver to silently substitute MJPEG.
 ///
 /// Returns the selected [`PixelFormat`] together with the [`v4l::Format`]
 /// that the driver actually accepted (which may differ in resolution).
@@ -207,27 +213,46 @@ fn negotiate_format(
         (PixelFormat::Mjpeg, v4l::FourCC::new(b"MJPG")),
     ];
 
+    // Resolutions to try, in order of preference.
+    // 640×480 is universally supported and more than sufficient for 112×112 inference.
+    let resolutions: &[(u32, u32)] = &[
+        (device.width, device.height), // device's reported best (may be 1920×1080)
+        (1280, 720),
+        (640, 480),
+    ];
+
     for (pixel_fmt, fourcc) in candidates {
-        let desired = v4l::format::Format::new(device.width, device.height, fourcc);
-        match dev.set_format(&desired) {
-            Ok(actual) => {
-                // Verify the driver accepted the requested FourCC.
-                if actual.fourcc == fourcc {
-                    return Ok((pixel_fmt, actual));
+        for &(w, h) in resolutions {
+            let desired = v4l::format::Format::new(w, h, fourcc);
+            match dev.set_format(&desired) {
+                Ok(actual) => {
+                    if actual.fourcc == fourcc {
+                        debug!(
+                            format = ?pixel_fmt,
+                            width = actual.width,
+                            height = actual.height,
+                            "format negotiated successfully"
+                        );
+                        return Ok((pixel_fmt, actual));
+                    }
+                    // Driver substituted a different format — try next resolution.
+                    debug!(
+                        requested = ?pixel_fmt,
+                        width = w,
+                        height = h,
+                        actual_fourcc = %actual.fourcc,
+                        "driver substituted format, trying next resolution"
+                    );
                 }
-                // Driver accepted a different format — keep trying.
-                debug!(
-                    requested = ?pixel_fmt,
-                    actual_fourcc = %actual.fourcc,
-                    "driver substituted a different format, continuing negotiation"
-                );
-            }
-            Err(e) => {
-                debug!(
-                    format = ?pixel_fmt,
-                    error = %e,
-                    "format not accepted by driver, trying next"
-                );
+                Err(e) => {
+                    debug!(
+                        format = ?pixel_fmt,
+                        width = w,
+                        height = h,
+                        error = %e,
+                        "format/resolution rejected by driver"
+                    );
+                }
             }
         }
     }
