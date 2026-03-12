@@ -5,6 +5,67 @@ use dax_auth_proto::SecurityMode;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+// ── Private sectioned structs (mirror config.toml layout) ────────────────────
+// Used only in CoreConfig::load() to deserialize the sectioned TOML file.
+// The public CoreConfig remains flat for ease of use in tests and code.
+
+#[derive(Debug, Deserialize, Default)]
+struct RawFileModels {
+    #[serde(default = "default_models_dir_str")]
+    dir: String,
+    #[serde(default = "default_detector_model_str")]
+    detection_model: String,
+    #[serde(default = "default_recognizer_model_str")]
+    recognition_model: String,
+    #[serde(default = "default_anti_spoof_model_str")]
+    liveness_model: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawFileCamera {
+    #[serde(default = "default_capture_fps")]
+    fps: u32,
+    #[serde(default = "default_max_frames")]
+    max_frames: u32,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawFileInference {
+    #[serde(default)]
+    intra_threads: u32,
+}
+
+/// Top-level sectioned config — mirrors `config.toml` structure.
+/// Unknown fields are silently ignored (no `deny_unknown_fields`).
+#[derive(Debug, Deserialize, Default)]
+struct RawFileConfig {
+    #[serde(default)]
+    models: RawFileModels,
+    #[serde(default)]
+    camera: RawFileCamera,
+    #[serde(default)]
+    inference: RawFileInference,
+}
+
+fn default_models_dir_str() -> String {
+    "/var/lib/dax-auth/models".into()
+}
+fn default_detector_model_str() -> String {
+    "det_10g.onnx".into()
+}
+fn default_recognizer_model_str() -> String {
+    "w600k_r50.onnx".into()
+}
+fn default_anti_spoof_model_str() -> String {
+    "minifasnet_v2.onnx".into()
+}
+fn default_capture_fps() -> u32 {
+    15
+}
+fn default_max_frames() -> u32 {
+    30
+}
+
 /// Configuration for the inference pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreConfig {
@@ -60,22 +121,38 @@ impl CoreConfig {
     /// Returns [`CoreError::ConfigLoad`] if the file exists but cannot be read
     /// or contains invalid TOML.
     pub fn load(path: &Path) -> Result<Self, CoreError> {
-        match std::fs::read_to_string(path) {
+        let raw: RawFileConfig = match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|e| {
                 CoreError::ConfigLoad(format!("failed to parse {}: {e}", path.display()))
-            }),
+            })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::warn!(
                     path = %path.display(),
                     "config file not found — using defaults"
                 );
-                Ok(Self::default_config())
+                return Ok(Self::default_config());
             }
-            Err(e) => Err(CoreError::ConfigLoad(format!(
-                "failed to read {}: {e}",
-                path.display()
-            ))),
-        }
+            Err(e) => {
+                return Err(CoreError::ConfigLoad(format!(
+                    "failed to read {}: {e}",
+                    path.display()
+                )))
+            }
+        };
+
+        Ok(Self {
+            models_dir: PathBuf::from(&raw.models.dir),
+            detector_model: raw.models.detection_model,
+            recognizer_model: raw.models.recognition_model,
+            anti_spoof_model: raw.models.liveness_model,
+            max_frames: raw.camera.max_frames,
+            capture_fps: raw.camera.fps,
+            execution_provider: ExecutionProviderConfig {
+                cpu_threads: raw.inference.intra_threads,
+                ..Default::default()
+            },
+            thresholds: ThresholdConfig::default(),
+        })
     }
 
     /// Returns a [`CoreConfig`] populated with production-ready default values.

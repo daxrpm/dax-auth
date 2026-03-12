@@ -1,6 +1,5 @@
 # dax-auth default configuration
 # Install to: /etc/dax-auth/config.toml
-# All paths can be overridden here.
 
 # ── Security ──────────────────────────────────────────────────────────────────
 [security]
@@ -24,23 +23,16 @@ auth_timeout_secs = 30
 #   "disabled" — DANGEROUS: disables liveness check entirely (for testing only)
 strategy = "auto"
 
-# Minimum liveness score to pass (0.0–1.0). Default: 0.5
+# Minimum liveness score to pass (0.0–1.0)
 liveness_threshold = 0.5
 
 # ── Camera ────────────────────────────────────────────────────────────────────
 [camera]
-# V4L2 device path. "auto" = try to detect IR camera first, then RGB
-device = "auto"
-
-# Frame capture resolution
-width  = 1280
-height = 720
-
-# Frames per second during auth (lower = less CPU, higher = faster response)
+# Frames per second during auth
 fps = 30
 
-# Maximum frames to capture per auth attempt before giving up
-max_frames = 90  # 3 seconds at 30fps
+# Maximum frames to capture per auth attempt before giving up (90 = 3s at 30fps)
+max_frames = 90
 
 # ── Models ────────────────────────────────────────────────────────────────────
 [models]
@@ -48,14 +40,15 @@ max_frames = 90  # 3 seconds at 30fps
 # Run: scripts/download_models.sh to fetch them
 dir = "/var/lib/dax-auth/models"
 
-# Detection model (RetinaFace)
-detection_model = "retinaface_10g.onnx"
+# Detection model (InsightFace SCRFD-10G)
+detection_model = "det_10g.onnx"
 
-# Recognition model (ArcFace R100)
-recognition_model = "arcface_r100.onnx"
+# Recognition model (ArcFace WebFace600K ResNet50)
+recognition_model = "w600k_r50.onnx"
 
-# Anti-spoofing model (MiniFASNetV2) — used when liveness.strategy is "2d" or "auto"
-liveness_model = "minifasnetv2.onnx"
+# Anti-spoofing model (MiniFASNetV2)
+# Set to "disabled" to skip liveness (DANGEROUS — testing only)
+liveness_model = "minifasnet_v2.onnx"
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 [storage]
@@ -63,16 +56,8 @@ liveness_model = "minifasnetv2.onnx"
 # Per-user subdirectories: {dir}/{sha256(username)}/
 dir = "/var/lib/dax-auth/users"
 
-# Maximum enrolled faces per user
-max_faces_per_user = 10
-
 # ── Execution providers ───────────────────────────────────────────────────────
 [inference]
-# Execution provider priority order (first available wins).
-# Supported values: "rocm", "cuda", "openvino", "cpu"
-# "cpu" should always be last as the fallback.
-execution_providers = ["rocm", "cuda", "openvino", "cpu"]
-
 # Number of intra-op threads for CPU inference (0 = auto-detect from CPU cores)
 intra_threads = 0
 
