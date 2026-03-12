@@ -1,33 +1,51 @@
-//! Face detection with RetinaFace ONNX.
+//! Face detection with SCRFD (Sample and Computation Redistribution Face Detector).
+//!
+//! Uses the InsightFace `det_10g.onnx` model which follows the SCRFD architecture:
+//! - Input:  `input.1`  — `[1, 3, H, W]` float32, BGR, no mean subtraction
+//! - Outputs: 9 tensors across 3 feature-map strides (8, 16, 32):
+//!   - Per stride: `[N_i, 1]` scores, `[N_i, 4]` box deltas, `[N_i, 10]` keypoint deltas
+//!
+//! Output decoding follows the SCRFD reference implementation from InsightFace.
+//! The public API (`DetectedFace`, `FaceDetector::detect`) is identical to the
+//! previous RetinaFace implementation — zero changes required in callers.
 
 use crate::CoreError;
 use ndarray::Array4;
 use ort::value::TensorRef;
 
+// ─── Public types ─────────────────────────────────────────────────────────────
+
 /// A detected face bounding box with keypoints.
 #[derive(Debug, Clone)]
 pub struct DetectedFace {
-    /// Bounding box: [x1, y1, x2, y2] in pixels.
+    /// Bounding box: `[x1, y1, x2, y2]` in pixels (original image coordinates).
     pub bbox: [f32; 4],
-    /// Five facial keypoints: [left_eye, right_eye, nose, left_mouth, right_mouth]
-    /// Each is [x, y] in pixels.
+    /// Five facial keypoints: `[left_eye, right_eye, nose, left_mouth, right_mouth]`
+    /// Each is `[x, y]` in pixels (original image coordinates).
     pub keypoints: [[f32; 2]; 5],
     /// Detection confidence score (0.0–1.0).
     pub score: f32,
 }
 
-/// Face detector using RetinaFace ONNX model.
+// ─── FaceDetector ─────────────────────────────────────────────────────────────
+
+/// Face detector using the InsightFace SCRFD `det_10g.onnx` model.
+///
+/// SCRFD is a highly efficient anchor-based face detector. The 10G variant
+/// achieves state-of-the-art accuracy on WiderFace with ~10 GFLOPs at 640×640.
+///
+/// The model accepts dynamic spatial resolution via the `?×?` input shape —
+/// we always feed 640×640 for maximum accuracy.
 pub struct FaceDetector {
     session: ort::session::Session,
-    /// Input size expected by the model: (width, height).
+    /// Input resolution: (width, height).  SCRFD accepts any multiple of 32.
     input_size: (u32, u32),
 }
 
 impl FaceDetector {
     /// Create a new `FaceDetector` from a pre-loaded ONNX session.
     ///
-    /// The `session` must correspond to a RetinaFace model with
-    /// 640×640 input resolution.
+    /// The `session` must correspond to `det_10g.onnx` (InsightFace SCRFD).
     #[must_use]
     pub fn new(session: ort::session::Session) -> Self {
         Self {
@@ -38,15 +56,14 @@ impl FaceDetector {
 
     /// Detect all faces in a frame.
     ///
-    /// Returns faces sorted by confidence (highest first).
-    /// Only returns faces with score >= `min_confidence`.
+    /// Returns faces sorted by confidence descending.
+    /// Only returns faces with `score >= min_confidence`.
     ///
-    /// The `frame_rgb` slice must contain `width * height * 3` packed RGB bytes
-    /// in row-major order.
+    /// `frame_rgb` must be `width * height * 3` packed RGB bytes, row-major.
     ///
     /// # Errors
-    /// Returns [`CoreError::Inference`] if the ONNX session fails.
-    /// Returns [`CoreError::Image`] if the RGB buffer is invalid.
+    /// Returns [`CoreError::Inference`] on ONNX failure.
+    /// Returns [`CoreError::Image`] if the RGB buffer size doesn't match `width × height`.
     pub fn detect(
         &mut self,
         frame_rgb: &[u8],
@@ -54,141 +71,137 @@ impl FaceDetector {
         height: u32,
         min_confidence: f32,
     ) -> Result<Vec<DetectedFace>, CoreError> {
-        // Build an RgbImage from the raw bytes
         let image =
             image::RgbImage::from_raw(width, height, frame_rgb.to_vec()).ok_or_else(|| {
                 CoreError::Image(format!(
-                    "RGB buffer length {} does not match {}x{} frame",
-                    frame_rgb.len(),
-                    width,
-                    height
+                    "RGB buffer length {} does not match {width}x{height}",
+                    frame_rgb.len()
                 ))
             })?;
 
-        // Track scale factors so we can map 640×640 coords back to original dims
         let (target_w, target_h) = self.input_size;
+
+        // Scale factors: model-space → original-image-space
         let scale_x = width as f32 / target_w as f32;
         let scale_y = height as f32 / target_h as f32;
 
-        // Preprocess: resize → BGR mean subtraction → NCHW tensor
-        let tensor = preprocess_retinaface(&image, self.input_size);
-
-        // Run inference.
-        // NOTE: The workspace uses ndarray 0.16 but ort's TensorArrayData trait is implemented
-        // for ndarray 0.17 types (different crate versions — not compatible at the type level).
-        // We use the (shape, &[T]) form which works without any ndarray version dependency.
-        let tensor_data: &[f32] = tensor
+        // Preprocess: resize → BGR → NCHW f32
+        let tensor = preprocess_scrfd(&image, self.input_size);
+        let tensor_data = tensor
             .as_slice()
-            .ok_or_else(|| CoreError::Inference("tensor has non-contiguous layout".into()))?;
+            .ok_or_else(|| CoreError::Inference("tensor non-contiguous".into()))?;
+
         let shape = [1_usize, 3, target_h as usize, target_w as usize];
         let tensor_ref = TensorRef::from_array_view((shape, tensor_data))
             .map_err(|e| CoreError::Inference(e.to_string()))?;
 
+        // Run SCRFD inference — produces 9 output tensors
         let outputs = self
             .session
             .run(ort::inputs![tensor_ref])
             .map_err(|e| CoreError::Inference(e.to_string()))?;
 
-        // Extract the 3 output tensors by index
-        // RetinaFace ONNX Model Zoo outputs: boxes [1,N,4], scores [1,N,2], landmarks [1,N,10]
-        let boxes_view = outputs[0]
-            .try_extract_array::<f32>()
-            .map_err(|e| CoreError::Inference(e.to_string()))?;
-        let scores_view = outputs[1]
-            .try_extract_array::<f32>()
-            .map_err(|e| CoreError::Inference(e.to_string()))?;
-        let points_view = outputs[2]
-            .try_extract_array::<f32>()
-            .map_err(|e| CoreError::Inference(e.to_string()))?;
+        // SCRFD outputs 9 tensors in the following order for strides [8, 16, 32]:
+        //   idx 0: scores stride-8  [N0, 1]
+        //   idx 1: scores stride-16 [N1, 1]
+        //   idx 2: scores stride-32 [N2, 1]
+        //   idx 3: boxes  stride-8  [N0, 4]
+        //   idx 4: boxes  stride-16 [N1, 4]
+        //   idx 5: boxes  stride-32 [N2, 4]
+        //   idx 6: kps    stride-8  [N0, 10]
+        //   idx 7: kps    stride-16 [N1, 10]
+        //   idx 8: kps    stride-32 [N2, 10]
+        //
+        // The actual numeric output names are auto-generated by ONNX (e.g. "448", "451"…)
+        // but ort returns them in the order the graph exports them, which matches above.
 
-        let boxes_shape = boxes_view.shape();
-        let n = if boxes_shape.len() >= 2 {
-            boxes_shape[boxes_shape.len() - 2]
-        } else {
-            0
-        };
-
-        // Generate anchors for anchor-box decoding
-        let anchors = generate_anchors(target_w);
-
-        // Decode detections
+        let strides = [8_u32, 16, 32];
         let mut candidates: Vec<DetectedFace> = Vec::new();
 
-        for i in 0..n {
-            // Score: index 1 = face class probability
-            let face_score = scores_view[[0, i, 1]];
-            if face_score < min_confidence {
-                continue;
+        for (level, &stride) in strides.iter().enumerate() {
+            let scores_raw = outputs[level]
+                .try_extract_array::<f32>()
+                .map_err(|e| CoreError::Inference(e.to_string()))?;
+            let boxes_raw = outputs[3 + level]
+                .try_extract_array::<f32>()
+                .map_err(|e| CoreError::Inference(e.to_string()))?;
+            let kps_raw = outputs[6 + level]
+                .try_extract_array::<f32>()
+                .map_err(|e| CoreError::Inference(e.to_string()))?;
+
+            let scores_flat = scores_raw.as_slice().unwrap_or(&[]);
+            let boxes_flat = boxes_raw.as_slice().unwrap_or(&[]);
+            let kps_flat = kps_raw.as_slice().unwrap_or(&[]);
+
+            let n = scores_flat.len(); // one score per anchor
+
+            // Generate anchor centers for this stride level
+            let anchors = anchor_centers(target_w, target_h, stride);
+
+            for i in 0..n {
+                let score = sigmoid(scores_flat[i]);
+                if score < min_confidence {
+                    continue;
+                }
+
+                // Each anchor: (cx, cy) in model-space pixels
+                let (acx, acy) = anchors[i];
+                let s = stride as f32;
+
+                // Box decoding: SCRFD predicts (left, top, right, bottom) distances
+                // from the anchor center, scaled by stride.
+                //   x1 = cx - left  * stride
+                //   y1 = cy - top   * stride
+                //   x2 = cx + right * stride
+                //   y2 = cy + bottom* stride
+                let left = boxes_flat[i * 4] * s;
+                let top = boxes_flat[i * 4 + 1] * s;
+                let right = boxes_flat[i * 4 + 2] * s;
+                let bottom = boxes_flat[i * 4 + 3] * s;
+
+                let x1 = ((acx - left) * scale_x).max(0.0);
+                let y1 = ((acy - top) * scale_y).max(0.0);
+                let x2 = ((acx + right) * scale_x).min(width as f32);
+                let y2 = ((acy + bottom) * scale_y).min(height as f32);
+
+                // Keypoint decoding: 5 points × 2 coords = 10 values per anchor
+                // Each (dx, dy) offset is relative to anchor center, scaled by stride.
+                let mut keypoints = [[0.0f32; 2]; 5];
+                for k in 0..5 {
+                    let dx = kps_flat[i * 10 + k * 2] * s;
+                    let dy = kps_flat[i * 10 + k * 2 + 1] * s;
+                    keypoints[k] = [(acx + dx) * scale_x, (acy + dy) * scale_y];
+                }
+
+                candidates.push(DetectedFace {
+                    bbox: [x1, y1, x2, y2],
+                    keypoints,
+                    score,
+                });
             }
-
-            let anchor = anchors[i];
-            let (acx, acy, aw, ah) = (anchor[0], anchor[1], anchor[2], anchor[3]);
-
-            // Box decoding: offsets relative to anchor
-            let dx = boxes_view[[0, i, 0]];
-            let dy = boxes_view[[0, i, 1]];
-            let dw = boxes_view[[0, i, 2]];
-            let dh = boxes_view[[0, i, 3]];
-
-            let cx = acx + dx * aw;
-            let cy = acy + dy * ah;
-            let w = aw * dw.exp();
-            let h = ah * dh.exp();
-
-            // Convert center format → corner format, scaled to 640×640 already
-            let x1 = (cx - w / 2.0).max(0.0);
-            let y1 = (cy - h / 2.0).max(0.0);
-            let x2 = (cx + w / 2.0).min(target_w as f32);
-            let y2 = (cy + h / 2.0).min(target_h as f32);
-
-            // Scale back to original image coordinates
-            let x1 = x1 * scale_x;
-            let y1 = y1 * scale_y;
-            let x2 = x2 * scale_x;
-            let y2 = y2 * scale_y;
-
-            // Decode 5 facial keypoints (10 values: x0,y0,x1,y1,...x4,y4)
-            let mut keypoints = [[0.0f32; 2]; 5];
-            for k in 0..5 {
-                let px = points_view[[0, i, k * 2]];
-                let py = points_view[[0, i, k * 2 + 1]];
-                // Keypoints are also anchor-relative offsets
-                let kx = (acx + px * aw) * scale_x;
-                let ky = (acy + py * ah) * scale_y;
-                keypoints[k] = [kx, ky];
-            }
-
-            candidates.push(DetectedFace {
-                bbox: [x1, y1, x2, y2],
-                keypoints,
-                score: face_score.clamp(0.0, 1.0),
-            });
         }
 
-        // Apply Non-Maximum Suppression
+        // NMS + sort descending
         let mut faces = nms(candidates, 0.4);
-
-        // Sort by confidence descending
         faces.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        tracing::debug!(count = faces.len(), "faces detected");
+        tracing::debug!(count = faces.len(), "faces detected (SCRFD)");
 
         Ok(faces)
     }
 }
 
-/// Preprocess an RGB image for RetinaFace inference.
+// ─── Preprocessing ────────────────────────────────────────────────────────────
+
+/// Preprocess an RGB image for SCRFD inference.
 ///
-/// Steps:
-/// 1. Resize to `target_size` (bilinear interpolation)
-/// 2. Convert RGB → BGR
-/// 3. Subtract ImageNet BGR mean: [104.0, 117.0, 123.0]
-/// 4. Layout: NCHW `[1, 3, H, W]` f32
-fn preprocess_retinaface(image: &image::RgbImage, target_size: (u32, u32)) -> Array4<f32> {
+/// Unlike RetinaFace, SCRFD does NOT use mean subtraction.
+/// It expects BGR pixel values in `[0, 255]`, NCHW layout.
+fn preprocess_scrfd(image: &image::RgbImage, target_size: (u32, u32)) -> Array4<f32> {
     let (target_w, target_h) = target_size;
 
     let resized = image::imageops::resize(
@@ -198,51 +211,56 @@ fn preprocess_retinaface(image: &image::RgbImage, target_size: (u32, u32)) -> Ar
         image::imageops::FilterType::Triangle,
     );
 
-    // BGR mean values (used because RetinaFace was trained on BGR images)
-    let mean_bgr = [104.0_f32, 117.0, 123.0];
-
     let mut tensor = Array4::<f32>::zeros((1, 3, target_h as usize, target_w as usize));
     for (x, y, pixel) in resized.enumerate_pixels() {
         let [r, g, b] = pixel.0;
-        // Channel layout: C=0 → B, C=1 → G, C=2 → R  (BGR order with mean subtraction)
-        tensor[[0, 0, y as usize, x as usize]] = b as f32 - mean_bgr[0];
-        tensor[[0, 1, y as usize, x as usize]] = g as f32 - mean_bgr[1];
-        tensor[[0, 2, y as usize, x as usize]] = r as f32 - mean_bgr[2];
+        // SCRFD: BGR channel order, no mean subtraction, values in [0, 255]
+        tensor[[0, 0, y as usize, x as usize]] = b as f32;
+        tensor[[0, 1, y as usize, x as usize]] = g as f32;
+        tensor[[0, 2, y as usize, x as usize]] = r as f32;
     }
     tensor
 }
 
-/// Generate RetinaFace anchor boxes for a square input of `input_size` pixels.
-///
-/// Returns anchors as `[cx, cy, w, h]` in the same order as model outputs.
-///
-/// Configuration matches the ONNX Model Zoo RetinaFace training:
-/// - Strides: `[8, 16, 32]`
-/// - Anchor sizes per stride: `[[16, 32], [64, 128], [256, 512]]`
-/// - Total for 640×640 input: `(80*80 + 40*40 + 20*20) * 2 = 16800` anchors
-fn generate_anchors(input_size: u32) -> Vec<[f32; 4]> {
-    let strides = [8_u32, 16, 32];
-    let anchor_sizes = [[16.0_f32, 32.0], [64.0, 128.0], [256.0, 512.0]];
-    let mut anchors: Vec<[f32; 4]> = Vec::new();
+// ─── Anchor generation ────────────────────────────────────────────────────────
 
-    for (stride, sizes) in strides.iter().zip(anchor_sizes.iter()) {
-        let feat_h = input_size / stride;
-        let feat_w = input_size / stride;
-        for gy in 0..feat_h {
-            for gx in 0..feat_w {
-                let cx = (gx as f32 + 0.5) * *stride as f32;
-                let cy = (gy as f32 + 0.5) * *stride as f32;
-                for &size in sizes.iter() {
-                    anchors.push([cx, cy, size, size]);
-                }
+/// Generate anchor center coordinates for one stride level.
+///
+/// SCRFD uses 2 anchors per spatial location. For a 640×640 input:
+/// - Stride 8  → 80×80 grid → 12800 anchors
+/// - Stride 16 → 40×40 grid →  3200 anchors
+/// - Stride 32 → 20×20 grid →   800 anchors
+///
+/// Returns `Vec<(cx, cy)>` in model-space pixels.
+fn anchor_centers(input_w: u32, input_h: u32, stride: u32) -> Vec<(f32, f32)> {
+    let feat_w = input_w / stride;
+    let feat_h = input_h / stride;
+    let num_anchors = 2; // SCRFD uses 2 anchors per location
+
+    let mut centers = Vec::with_capacity((feat_w * feat_h * num_anchors) as usize);
+
+    for gy in 0..feat_h {
+        for gx in 0..feat_w {
+            let cx = (gx as f32 + 0.5) * stride as f32;
+            let cy = (gy as f32 + 0.5) * stride as f32;
+            for _ in 0..num_anchors {
+                centers.push((cx, cy));
             }
         }
     }
 
-    anchors
+    centers
 }
 
-/// Compute Intersection-over-Union for two bounding boxes `[x1, y1, x2, y2]`.
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+/// Sigmoid activation: maps raw logit to [0, 1] probability.
+#[inline]
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// Compute IoU for two bounding boxes `[x1, y1, x2, y2]`.
 fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let x1 = a[0].max(b[0]);
     let y1 = a[1].max(b[1]);
@@ -253,19 +271,13 @@ fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     if intersection == 0.0 {
         return 0.0;
     }
-
     let area_a = (a[2] - a[0]) * (a[3] - a[1]);
     let area_b = (b[2] - b[0]) * (b[3] - b[1]);
     intersection / (area_a + area_b - intersection)
 }
 
-/// Apply Non-Maximum Suppression to remove overlapping detections.
-///
-/// Candidates must be sorted by score descending before calling (or sorting
-/// is done inside).  Keeps the highest-scoring box among any group of boxes
-/// with IoU > `iou_threshold`.
+/// Non-Maximum Suppression — removes overlapping detections.
 fn nms(mut candidates: Vec<DetectedFace>, iou_threshold: f32) -> Vec<DetectedFace> {
-    // Sort descending by score so we always keep the best box
     candidates.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -273,7 +285,6 @@ fn nms(mut candidates: Vec<DetectedFace>, iou_threshold: f32) -> Vec<DetectedFac
     });
 
     let mut keep: Vec<DetectedFace> = Vec::new();
-
     'outer: for candidate in candidates {
         for kept in &keep {
             if iou(&candidate.bbox, &kept.bbox) > iou_threshold {
@@ -282,53 +293,82 @@ fn nms(mut candidates: Vec<DetectedFace>, iou_threshold: f32) -> Vec<DetectedFac
         }
         keep.push(candidate);
     }
-
     keep
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn preprocess_shape_is_correct() {
+    fn preprocess_scrfd_shape_is_correct() {
         let img = image::RgbImage::new(1920, 1080);
-        let tensor = preprocess_retinaface(&img, (640, 640));
+        let tensor = preprocess_scrfd(&img, (640, 640));
         assert_eq!(tensor.shape(), &[1, 3, 640, 640]);
     }
 
     #[test]
-    fn preprocess_mean_subtraction() {
-        // Pure blue pixel (R=0, G=0, B=255) in RGB
-        // After RGB→BGR: B_channel=255, G_channel=0, R_channel=0
-        // C=0 (B channel) = 255 - 104.0 = 151.0
-        // C=1 (G channel) =   0 - 117.0 = -117.0
-        // C=2 (R channel) =   0 - 123.0 = -123.0
+    fn preprocess_scrfd_bgr_no_mean_subtraction() {
+        // Pure red pixel (R=255, G=0, B=0) in RGB
+        // After RGB→BGR: C=0=B=0, C=1=G=0, C=2=R=255
+        // No mean subtraction in SCRFD
         let mut img = image::RgbImage::new(1, 1);
-        img.put_pixel(0, 0, image::Rgb([0, 0, 255]));
-        let t = preprocess_retinaface(&img, (1, 1));
+        img.put_pixel(0, 0, image::Rgb([255, 0, 0]));
+        let t = preprocess_scrfd(&img, (1, 1));
         assert!(
-            (t[[0, 0, 0, 0]] - 151.0).abs() < 1.0,
-            "B channel wrong: got {}",
+            (t[[0, 0, 0, 0]] - 0.0).abs() < 1e-5,
+            "B channel: expected 0, got {}",
             t[[0, 0, 0, 0]]
         );
         assert!(
-            (t[[0, 1, 0, 0]] - (-117.0)).abs() < 1.0,
-            "G channel wrong: got {}",
+            (t[[0, 1, 0, 0]] - 0.0).abs() < 1e-5,
+            "G channel: expected 0, got {}",
             t[[0, 1, 0, 0]]
         );
         assert!(
-            (t[[0, 2, 0, 0]] - (-123.0)).abs() < 1.0,
-            "R channel wrong: got {}",
+            (t[[0, 2, 0, 0]] - 255.0).abs() < 1e-5,
+            "R channel: expected 255, got {}",
             t[[0, 2, 0, 0]]
         );
     }
 
     #[test]
-    fn generate_anchors_correct_count() {
-        let anchors = generate_anchors(640);
-        // (80*80 + 40*40 + 20*20) * 2 = 16800
-        assert_eq!(anchors.len(), 16800);
+    fn anchor_centers_stride8_count() {
+        // 640/8 = 80 × 80 = 6400 locations × 2 anchors = 12800
+        let centers = anchor_centers(640, 640, 8);
+        assert_eq!(centers.len(), 12800);
+    }
+
+    #[test]
+    fn anchor_centers_stride16_count() {
+        // 640/16 = 40 × 40 = 1600 × 2 = 3200
+        let centers = anchor_centers(640, 640, 16);
+        assert_eq!(centers.len(), 3200);
+    }
+
+    #[test]
+    fn anchor_centers_stride32_count() {
+        // 640/32 = 20 × 20 = 400 × 2 = 800
+        let centers = anchor_centers(640, 640, 32);
+        assert_eq!(centers.len(), 800);
+    }
+
+    #[test]
+    fn anchor_centers_first_entry_is_half_stride() {
+        // First anchor at (0,0) grid cell should be at (stride/2, stride/2)
+        let centers = anchor_centers(640, 640, 8);
+        let (cx, cy) = centers[0];
+        assert!((cx - 4.0).abs() < 1e-5, "cx={cx}");
+        assert!((cy - 4.0).abs() < 1e-5, "cy={cy}");
+    }
+
+    #[test]
+    fn sigmoid_values() {
+        assert!((sigmoid(0.0) - 0.5).abs() < 1e-5);
+        assert!(sigmoid(100.0) > 0.999);
+        assert!(sigmoid(-100.0) < 0.001);
     }
 
     #[test]
@@ -338,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn iou_non_overlapping_boxes_is_zero() {
+    fn iou_non_overlapping_is_zero() {
         let a = [0.0_f32, 0.0, 5.0, 5.0];
         let b = [10.0_f32, 10.0, 20.0, 20.0];
         assert_eq!(iou(&a, &b), 0.0);
@@ -352,18 +392,18 @@ mod tests {
             score: 0.9,
         };
         let b = DetectedFace {
-            bbox: [0.5, 0.5, 10.5, 10.5], // nearly identical
+            bbox: [0.5, 0.5, 10.5, 10.5],
             keypoints: [[0.0; 2]; 5],
             score: 0.8,
         };
         let kept = nms(vec![a, b], 0.4);
-        assert_eq!(kept.len(), 1, "duplicate box should be suppressed");
-        assert!((kept[0].score - 0.9).abs() < 1e-5, "highest score kept");
+        assert_eq!(kept.len(), 1, "duplicate should be suppressed");
+        assert!((kept[0].score - 0.9).abs() < 1e-5);
     }
 
     #[test]
-    #[ignore = "requires retinaface_10g.onnx model file"]
+    #[ignore = "requires det_10g.onnx model file"]
     fn detect_returns_empty_for_blank_frame() {
-        // Load model from env var path, run on blank image, expect Ok(vec![])
+        // Manual test: load model, run on blank image, expect Ok(vec![])
     }
 }

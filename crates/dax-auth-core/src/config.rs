@@ -36,9 +36,10 @@ pub struct CoreConfig {
 impl Default for CoreConfig {
     fn default() -> Self {
         Self {
-            models_dir: PathBuf::from("/usr/share/dax-auth/models"),
-            detector_model: "retinaface_10g.onnx".into(),
-            recognizer_model: "arcface_r100.onnx".into(),
+            models_dir: PathBuf::from("/var/lib/dax-auth/models"),
+            // InsightFace buffalo_l pack filenames (SCRFD + WebFace600K)
+            detector_model: "det_10g.onnx".into(),
+            recognizer_model: "w600k_r50.onnx".into(),
             anti_spoof_model: "minifasnet_v2.onnx".into(),
             execution_provider: ExecutionProviderConfig::default(),
             thresholds: ThresholdConfig::default(),

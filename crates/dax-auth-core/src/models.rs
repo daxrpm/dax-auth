@@ -30,32 +30,32 @@ pub struct ModelInfo {
 }
 
 /// All supported detection models.
-pub const DETECTION_MODELS: &[ModelInfo] = &[
-    ModelInfo {
-        id: "retinaface_10g",
-        description: "RetinaFace with ResNet50 backbone, 10GFlops — high accuracy",
-        license: "MIT",
-        filename: "retinaface_10g.onnx",
-        sha256: None, // filled when model is published
-        download_url: Some("https://github.com/onnx/models/raw/main/validated/vision/body_analysis/retinaface/model/retinaface-10g.onnx"),
-        opset: 11,
-        input_size: [640, 640],
-    },
-];
+pub const DETECTION_MODELS: &[ModelInfo] = &[ModelInfo {
+    id: "det_10g",
+    description: "InsightFace SCRFD-10G — efficient face detector, 10 GFLOPs at 640×640",
+    license: "MIT",
+    filename: "det_10g.onnx",
+    sha256: None,
+    download_url: Some(
+        "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+    ),
+    opset: 11,
+    input_size: [640, 640],
+}];
 
 /// All supported recognition models.
-pub const RECOGNITION_MODELS: &[ModelInfo] = &[
-    ModelInfo {
-        id: "arcface_r100",
-        description: "ArcFace ResNet100 — state of the art face recognition (Apache 2.0)",
-        license: "Apache-2.0",
-        filename: "arcfaceresnet100-8.onnx",
-        sha256: None,
-        download_url: Some("https://github.com/onnx/models/raw/main/validated/vision/body_analysis/arcface/model/arcfaceresnet100-8.onnx"),
-        opset: 8,
-        input_size: [112, 112],
-    },
-];
+pub const RECOGNITION_MODELS: &[ModelInfo] = &[ModelInfo {
+    id: "w600k_r50",
+    description: "ArcFace WebFace600K ResNet50 — high accuracy face recognition",
+    license: "Apache-2.0",
+    filename: "w600k_r50.onnx",
+    sha256: None,
+    download_url: Some(
+        "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+    ),
+    opset: 11,
+    input_size: [112, 112],
+}];
 
 /// All supported anti-spoofing models.
 pub const ANTI_SPOOF_MODELS: &[ModelInfo] = &[ModelInfo {
