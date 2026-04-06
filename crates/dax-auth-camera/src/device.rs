@@ -155,8 +155,12 @@ impl CameraDevice {
 
     /// Returns the best available camera for authentication.
     ///
-    /// Preference order: `RgbAndInfrared` > `Infrared` > `Rgb`.
+    /// Preference order: `RgbAndInfrared` > `Rgb` > `Infrared`.
     /// Within each kind, higher resolution is preferred.
+    ///
+    /// Rationale: the current face detector/recognizer models are trained on
+    /// visible-light images. Infrared-only streams remain a fallback when no
+    /// RGB-capable device is available.
     ///
     /// # Errors
     /// Returns `CameraError::DeviceNotFound` if no suitable device is found.
@@ -168,12 +172,12 @@ impl CameraDevice {
             });
         }
 
-        // Sort: IR cameras first, then by resolution (descending).
+        // Sort: RGB-capable cameras first, then by resolution (descending).
         devices.sort_by_key(|d| {
             let kind_score = match d.kind {
                 CameraKind::RgbAndInfrared => 0u32,
-                CameraKind::Infrared => 1,
-                CameraKind::Rgb => 2,
+                CameraKind::Rgb => 1,
+                CameraKind::Infrared => 2,
             };
             (kind_score, u32::MAX - d.width * d.height)
         });
