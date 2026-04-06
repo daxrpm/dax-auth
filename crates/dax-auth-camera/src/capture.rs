@@ -16,7 +16,7 @@ use v4l::io::traits::CaptureStream;
 use v4l::video::Capture;
 
 use crate::frame::PixelFormat;
-use crate::{CameraDevice, CameraError, Frame};
+use crate::{CameraDevice, CameraError, CameraKind, Frame};
 
 /// Maximum number of warm-up frames to discard when `capture_best_frame` is
 /// looking for a non-black frame.  Prevents an infinite loop on broken hardware.
@@ -56,10 +56,14 @@ pub struct CameraCapture {
 impl CameraCapture {
     /// Open a camera device and negotiate a capture format.
     ///
-    /// Preferred format order: YUYV → MJPEG. The first supported format is
-    /// selected. The driver may silently adjust the resolution; the actual
-    /// negotiated dimensions are stored internally and reflected in returned
-    /// [`Frame`] metadata.
+    /// Preferred format order depends on camera kind:
+    /// - RGB: YUYV → MJPEG → BGR24
+    /// - Infrared: GREY → Y16 → YUYV → MJPEG
+    /// - RGB+IR: YUYV → MJPEG → BGR24 → GREY → Y16
+    ///
+    /// The first supported format is selected. The driver may silently adjust
+    /// the resolution; the actual negotiated dimensions are stored internally
+    /// and reflected in returned [`Frame`] metadata.
     ///
     /// # Errors
     ///
@@ -69,8 +73,8 @@ impl CameraCapture {
     pub fn open(device: CameraDevice) -> Result<Self, CameraError> {
         debug!(path = %device.path, "opening V4L2 device");
 
-        let inner = v4l::Device::with_path(&device.path)
-            .map_err(|e| CameraError::V4l2(e.to_string()))?;
+        let inner =
+            v4l::Device::with_path(&device.path).map_err(|e| CameraError::V4l2(e.to_string()))?;
 
         // Negotiate format: prefer YUYV, fall back to MJPEG.
         let (format, actual_fmt) = negotiate_format(&inner, &device)?;
@@ -194,7 +198,7 @@ impl CameraCapture {
 
 /// Try to negotiate a pixel format with the V4L2 driver.
 ///
-/// Preference order: YUYV → MJPEG, tried at multiple resolutions.
+/// Preference order depends on camera kind and is tried at multiple resolutions.
 ///
 /// We attempt each format at decreasing resolutions: the device's reported
 /// best resolution, then 1280×720, then 640×480. This is necessary because
@@ -208,10 +212,22 @@ fn negotiate_format(
     dev: &v4l::Device,
     device: &CameraDevice,
 ) -> Result<(PixelFormat, v4l::format::Format), CameraError> {
-    let candidates = [
-        (PixelFormat::Yuyv, v4l::FourCC::new(b"YUYV")),
-        (PixelFormat::Mjpeg, v4l::FourCC::new(b"MJPG")),
-    ];
+    let candidates: &[PixelFormat] = match device.kind {
+        CameraKind::Rgb => &[PixelFormat::Yuyv, PixelFormat::Mjpeg, PixelFormat::Bgr24],
+        CameraKind::Infrared => &[
+            PixelFormat::Grey,
+            PixelFormat::Y16,
+            PixelFormat::Yuyv,
+            PixelFormat::Mjpeg,
+        ],
+        CameraKind::RgbAndInfrared => &[
+            PixelFormat::Yuyv,
+            PixelFormat::Mjpeg,
+            PixelFormat::Bgr24,
+            PixelFormat::Grey,
+            PixelFormat::Y16,
+        ],
+    };
 
     // Resolutions to try, in order of preference.
     // 640×480 is universally supported and more than sufficient for 112×112 inference.
@@ -221,7 +237,8 @@ fn negotiate_format(
         (640, 480),
     ];
 
-    for (pixel_fmt, fourcc) in candidates {
+    for pixel_fmt in candidates {
+        let fourcc = pixel_fmt.to_v4l2_fourcc();
         for &(w, h) in resolutions {
             let desired = v4l::format::Format::new(w, h, fourcc);
             match dev.set_format(&desired) {
@@ -233,7 +250,7 @@ fn negotiate_format(
                             height = actual.height,
                             "format negotiated successfully"
                         );
-                        return Ok((pixel_fmt, actual));
+                        return Ok((*pixel_fmt, actual));
                     }
                     // Driver substituted a different format — try next resolution.
                     debug!(
@@ -257,8 +274,22 @@ fn negotiate_format(
         }
     }
 
+    // Some drivers reject explicit set_format attempts but have a usable current
+    // format already configured. Accept it as a final fallback.
+    if let Ok(current) = dev.format() {
+        if let Some(pf) = PixelFormat::from_v4l2_fourcc(current.fourcc) {
+            debug!(
+                format = ?pf,
+                width = current.width,
+                height = current.height,
+                "using driver current format as fallback"
+            );
+            return Ok((pf, current));
+        }
+    }
+
     Err(CameraError::UnsupportedFormat {
-        format: "YUYV / MJPEG".into(),
+        format: "YUYV / MJPEG / BGR24 / GREY / Y16".into(),
     })
 }
 
@@ -293,8 +324,8 @@ mod tests {
 
     #[test]
     fn open_returns_error_for_nonexistent_device() {
-        use crate::CameraDevice;
         use crate::device::CameraKind;
+        use crate::CameraDevice;
 
         let fake_device = CameraDevice {
             path: "/dev/video_does_not_exist_99".into(),

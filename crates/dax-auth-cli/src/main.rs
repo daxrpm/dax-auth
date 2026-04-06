@@ -17,11 +17,7 @@
 #![deny(clippy::expect_used)]
 
 use clap::{Parser, Subcommand};
-use dax_auth_core::{
-    store::FaceStore,
-    pipeline::AuthPipeline,
-    CoreConfig,
-};
+use dax_auth_core::{pipeline::AuthPipeline, store::FaceStore, CoreConfig};
 use std::path::Path;
 
 /// Path to the production config file.
@@ -173,7 +169,19 @@ async fn cmd_enroll(user: Option<String>, label: Option<String>) -> anyhow::Resu
     let mut pipeline = AuthPipeline::initialize(config)?;
 
     println!("Look at the camera. Hold still...");
-    let embedding = pipeline.capture_and_embed().await?;
+    let embedding = match pipeline.capture_and_embed().await {
+        Ok(e) => e,
+        Err(e) => {
+            // Workaround: ONNX Runtime dynamic library may crash during session
+            // teardown in short-lived CLI processes on some hosts.
+            // Intentionally leak the pipeline; process exit reclaims memory.
+            std::mem::forget(pipeline);
+            return Err(e.into());
+        }
+    };
+
+    // See workaround note above.
+    std::mem::forget(pipeline);
 
     let count = store.enroll_with_label(&username, embedding, label)?;
     println!("Face enrolled successfully. You now have {count} enrolled face(s).");
@@ -318,38 +326,50 @@ async fn cmd_test(verbose: bool) -> anyhow::Result<()> {
     }
 
     // ── Model file presence check ─────────────────────────────────────────────
-    let model_files = [
+    // Required for base auth flow: detector + recognizer.
+    let required_models = [
         config.models_dir.join(&config.detector_model),
         config.models_dir.join(&config.recognizer_model),
-        config.models_dir.join(&config.anti_spoof_model),
     ];
 
-    let mut models_ok = true;
-    for path in &model_files {
+    let mut required_ok = true;
+    for path in &required_models {
         if !path.exists() {
-            if models_ok {
+            if required_ok {
                 // Print header only once.
                 print!("Models:          ");
             }
-            println!("FAIL — missing: {}", path.display());
-            models_ok = false;
+            println!("FAIL — missing required: {}", path.display());
+            required_ok = false;
         }
     }
 
-    if models_ok {
+    if required_ok {
         print!("Models:          ");
-        println!("all present — OK");
+        println!("required models present — OK");
         if verbose {
-            for path in &model_files {
-                println!("                 {}", path.display());
+            for path in &required_models {
+                println!("                 required: {}", path.display());
             }
         }
     } else {
         println!("  Hint: run `sudo dax-auth download-models`");
         println!("{}", "─".repeat(45));
         println!("Result: FAIL");
-        // all_ok will be checked at the end, but we exit early here.
         std::process::exit(1);
+    }
+
+    // Optional hardening model: anti-spoof. Missing file is a warning, not FAIL.
+    let anti_spoof_path = config.models_dir.join(&config.anti_spoof_model);
+    print!("Liveness model:  ");
+    if anti_spoof_path.exists() {
+        println!("{} — OK", anti_spoof_path.display());
+    } else {
+        println!(
+            "missing optional model: {} — WARNING (reduced anti-spoof security)",
+            anti_spoof_path.display()
+        );
+        println!("                 add minifasnet_v2.onnx for stronger liveness checks");
     }
 
     // ── Pipeline load check ───────────────────────────────────────────────────
@@ -422,7 +442,11 @@ async fn cmd_test(verbose: bool) -> anyhow::Result<()> {
                     }
                 }
                 let threshold = config.thresholds.secure;
-                let match_str = if best_score >= threshold { "MATCH" } else { "NO MATCH" };
+                let match_str = if best_score >= threshold {
+                    "MATCH"
+                } else {
+                    "NO MATCH"
+                };
                 print!("Match:           ");
                 println!(
                     "best score {best_score:.3} vs {enrolled_count} enrolled face(s) — {match_str} (threshold {threshold:.2})"
@@ -436,6 +460,9 @@ async fn cmd_test(verbose: bool) -> anyhow::Result<()> {
 
     println!("{}", "─".repeat(45));
     if all_ok {
+        // Workaround: ONNX Runtime dynamic library may crash during session
+        // teardown in short-lived CLI processes on some hosts.
+        std::mem::forget(pipeline);
         println!("Result: PASS");
     } else {
         println!("Result: FAIL");
