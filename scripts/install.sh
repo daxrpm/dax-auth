@@ -131,32 +131,32 @@ ensure_filesystem_layout() {
 }
 
 install_local_artifacts_if_available() {
-    local repo_root release_dir needs_build
+    local repo_root release_dir has_source_checkout
     repo_root="$(cd -- "$SCRIPT_DIR/.." && pwd)"
     release_dir="$repo_root/target/release"
-    needs_build=0
+    has_source_checkout=0
 
-    if [[ ! -x "$release_dir/dax-authd" || ! -x "$release_dir/dax-auth" || ! -f "$release_dir/libpam_dax_auth.so" ]]; then
-        needs_build=1
-    elif [[ -f "$repo_root/Cargo.toml" ]] && command -v find >/dev/null 2>&1; then
-        # Rebuild if any Rust/package source is newer than release artifacts.
-        if find "$repo_root/crates" "$repo_root/packaging" "$repo_root/scripts" -type f \
-            \( -name '*.rs' -o -name 'Cargo.toml' -o -name '*.service' -o -name '*.toml' \) \
-            -newer "$release_dir/dax-authd" | grep -q .; then
-            needs_build=1
-        fi
+    if [[ -f "$repo_root/Cargo.toml" && -d "$repo_root/crates" ]]; then
+        has_source_checkout=1
     fi
 
-    if [[ "$needs_build" -eq 1 ]]; then
-        if command -v cargo >/dev/null 2>&1 && [[ -f "$repo_root/Cargo.toml" ]]; then
-            log "building fresh release artifacts from source"
-            (
-                cd "$repo_root"
-                cargo build --release -p dax-auth-daemon -p dax-auth-cli -p dax-auth-pam
-            )
-        else
-            warn "release artifacts missing/stale and cargo source build unavailable"
+    # Package/system install path: binaries should already be present.
+    if [[ "$has_source_checkout" -eq 0 ]]; then
+        if [[ -x /usr/bin/dax-authd && -x /usr/bin/dax-auth && -f /usr/lib/security/pam_dax_auth.so ]]; then
+            return
         fi
+        warn "installed binaries missing; reinstall package or run installer from source checkout"
+        return
+    fi
+
+    if command -v cargo >/dev/null 2>&1; then
+        log "building fresh release artifacts from source"
+        (
+            cd "$repo_root"
+            cargo build --release -p dax-auth-daemon -p dax-auth-cli -p dax-auth-pam
+        )
+    else
+        warn "cargo not available; using existing release artifacts if present"
     fi
 
     if [[ -x "$release_dir/dax-authd" && -x "$release_dir/dax-auth" && -f "$release_dir/libpam_dax_auth.so" ]]; then
@@ -180,7 +180,9 @@ install_local_artifacts_if_available() {
         install -m 0755 "$repo_root/scripts/download_models.sh" /usr/lib/dax-auth/download_models.sh
         install -m 0755 "$repo_root/scripts/install.sh" /usr/lib/dax-auth/install.sh
     else
-        warn "local release artifacts not found; install package or build release binaries to enable daemon service"
+        echo "ERROR: release artifacts not found in $release_dir" >&2
+        echo "       run: cargo build --release -p dax-auth-daemon -p dax-auth-cli -p dax-auth-pam" >&2
+        exit 1
     fi
 }
 
