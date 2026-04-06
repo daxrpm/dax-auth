@@ -391,6 +391,10 @@ async fn cmd_test(verbose: bool) -> anyhow::Result<()> {
 
     // ── Capture and embed ─────────────────────────────────────────────────────
     println!("Capturing frame (look at camera)...");
+    println!(
+        "  (waiting up to {}s; camera may need a moment to warm up)",
+        config.max_frames
+    );
     let capture_start = std::time::Instant::now();
     let embedding_result = pipeline.capture_and_embed().await;
     let capture_elapsed = capture_start.elapsed().as_millis();

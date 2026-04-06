@@ -408,42 +408,93 @@ impl AuthPipeline {
 
         let camera_kind = device.kind;
 
+        tracing::info!(
+            path = %device.path,
+            kind = ?device.kind,
+            width = device.width,
+            height = device.height,
+            "enroll: opening camera"
+        );
+
         let mut capture = CameraCapture::open(device).map_err(CoreError::Camera)?;
 
-        for _frame_idx in 0..self.config.max_frames {
+        tracing::info!(
+            format = ?capture.format,
+            width = capture.width,
+            height = capture.height,
+            "enroll: camera format negotiated"
+        );
+
+        // Discard up to 5 warm-up frames: USB cameras output all-black frames
+        // while auto-exposure and gain settle after the stream starts.
+        let warmup = 5_u32;
+        for w in 1..=warmup {
+            match capture.capture_frame_async().await {
+                Ok(f) if f.data.iter().all(|&b| b == 0) => {
+                    tracing::debug!(attempt = w, "enroll: warm-up frame (all-black), discarding");
+                }
+                Ok(_) => {
+                    tracing::debug!(attempt = w, "enroll: warm-up complete (non-black frame)");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, attempt = w, "enroll: warm-up frame error");
+                }
+            }
+        }
+
+        for frame_idx in 0..self.config.max_frames {
+            let t_frame = std::time::Instant::now();
             let frame = match capture.capture_frame_async().await {
                 Ok(f) => f,
                 Err(e) => {
-                    tracing::warn!(error = %e, "enroll: frame capture failed");
+                    tracing::warn!(error = %e, frame = frame_idx, "enroll: frame capture failed");
                     continue;
                 }
             };
+            tracing::debug!(
+                frame = frame_idx,
+                elapsed_ms = t_frame.elapsed().as_millis(),
+                "enroll: frame captured"
+            );
 
             let rgb_bytes = match frame.to_rgb() {
                 Ok(b) => b,
                 Err(e) => {
-                    tracing::warn!(error = %e, "enroll: frame to_rgb failed");
+                    tracing::warn!(error = %e, frame = frame_idx, "enroll: frame to_rgb failed");
                     continue;
                 }
             };
 
+            let t_detect = std::time::Instant::now();
             let faces = match self
                 .detector
                 .detect(&rgb_bytes, frame.width, frame.height, 0.5)
             {
                 Ok(f) => f,
                 Err(e) => {
-                    tracing::warn!(error = %e, "enroll: detection failed");
+                    tracing::warn!(error = %e, frame = frame_idx, "enroll: detection failed");
                     continue;
                 }
             };
+            tracing::debug!(
+                frame = frame_idx,
+                faces = faces.len(),
+                detect_ms = t_detect.elapsed().as_millis(),
+                "enroll: detection complete"
+            );
 
             if faces.is_empty() {
+                tracing::debug!(frame = frame_idx, "enroll: no face detected");
                 continue;
             }
 
             if faces.len() > 1 {
-                tracing::debug!("enroll: multiple faces detected, skipping frame");
+                tracing::debug!(
+                    frame = frame_idx,
+                    faces = faces.len(),
+                    "enroll: multiple faces detected, skipping frame"
+                );
                 continue;
             }
 

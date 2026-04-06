@@ -45,12 +45,12 @@ pub struct CameraCapture {
     pub(crate) device: CameraDevice,
     /// The open V4L2 device handle.
     inner: v4l::Device,
-    /// The negotiated pixel format (YUYV preferred, MJPEG fallback).
-    format: PixelFormat,
+    /// The negotiated pixel format.
+    pub format: PixelFormat,
     /// Width reported by the driver after format negotiation.
-    width: u32,
+    pub width: u32,
     /// Height reported by the driver after format negotiation.
-    height: u32,
+    pub height: u32,
 }
 
 impl CameraCapture {
@@ -212,30 +212,44 @@ fn negotiate_format(
     dev: &v4l::Device,
     device: &CameraDevice,
 ) -> Result<(PixelFormat, v4l::format::Format), CameraError> {
+    // Format priority rationale:
+    //
+    // For RGB cameras on USB, MJPEG is ALWAYS preferred over YUYV because:
+    //   - YUYV at 1920×1080 saturates USB 2.0 bandwidth (~148 MB/s raw vs ~60 MB/s bus)
+    //     which causes the V4L2 driver to drop/stall and the first stream.next() to block
+    //     indefinitely instead of returning with a timeout.
+    //   - MJPEG compresses on-device and stays well within USB bandwidth at all resolutions.
+    //   - Both are decoded to RGB in software; quality for 640×640 SCRFD inference is identical.
+    //
+    // For IR cameras, GREY/Y16 are native hardware formats and do not have bandwidth issues.
     let candidates: &[PixelFormat] = match device.kind {
-        CameraKind::Rgb => &[PixelFormat::Yuyv, PixelFormat::Mjpeg, PixelFormat::Bgr24],
+        CameraKind::Rgb => &[PixelFormat::Mjpeg, PixelFormat::Yuyv, PixelFormat::Bgr24],
         CameraKind::Infrared => &[
             PixelFormat::Grey,
             PixelFormat::Y16,
-            PixelFormat::Yuyv,
             PixelFormat::Mjpeg,
+            PixelFormat::Yuyv,
         ],
         CameraKind::RgbAndInfrared => &[
-            PixelFormat::Yuyv,
             PixelFormat::Mjpeg,
+            PixelFormat::Yuyv,
             PixelFormat::Bgr24,
             PixelFormat::Grey,
             PixelFormat::Y16,
         ],
     };
 
-    // Resolutions to try, in order of preference.
-    // 640×480 is universally supported and more than sufficient for 112×112 inference.
-    let resolutions: &[(u32, u32)] = &[
-        (device.width, device.height), // device's reported best (may be 1920×1080)
-        (1280, 720),
-        (640, 480),
-    ];
+    // Resolution strategy:
+    //   - Cap at 640×480 for capture. SCRFD inference runs at 640×640 internally anyway;
+    //     feeding 1920×1080 wastes USB bandwidth and memory with zero accuracy benefit.
+    //   - Always include 640×480 and 640×360 as guaranteed-safe fallbacks.
+    let capped_w = device.width.min(640);
+    let capped_h = device.height.min(480);
+    let resolutions: &[(u32, u32)] = if capped_w == 640 && capped_h == 480 {
+        &[(640, 480), (640, 360)]
+    } else {
+        &[(capped_w, capped_h), (640, 480), (640, 360)]
+    };
 
     for pixel_fmt in candidates {
         let fourcc = pixel_fmt.to_v4l2_fourcc();
