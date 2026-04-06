@@ -149,14 +149,39 @@ install_local_artifacts_if_available() {
         return
     fi
 
-    if command -v cargo >/dev/null 2>&1; then
-        log "building fresh release artifacts from source"
-        (
-            cd "$repo_root"
-            cargo build --release -p dax-auth-daemon -p dax-auth-cli -p dax-auth-pam
-        )
-    else
-        warn "cargo not available; using existing release artifacts if present"
+    local build_succeeded=0
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+        local sudo_home
+        sudo_home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+        if [[ -n "$sudo_home" ]]; then
+            log "building fresh release artifacts as $SUDO_USER"
+            if runuser -u "$SUDO_USER" -- \
+                env HOME="$sudo_home" \
+                CARGO_HOME="$sudo_home/.cargo" \
+                RUSTUP_HOME="$sudo_home/.rustup" \
+                PATH="$sudo_home/.cargo/bin:$PATH" \
+                bash -lc "cd \"$repo_root\" && cargo build --release -p dax-auth-daemon -p dax-auth-cli -p dax-auth-pam"; then
+                build_succeeded=1
+            else
+                warn "build as $SUDO_USER failed; trying current user context"
+            fi
+        fi
+    fi
+
+    if [[ "$build_succeeded" -eq 0 ]]; then
+        if command -v cargo >/dev/null 2>&1; then
+            log "building fresh release artifacts from source"
+            (
+                cd "$repo_root"
+                cargo build --release -p dax-auth-daemon -p dax-auth-cli -p dax-auth-pam
+            ) && build_succeeded=1
+        fi
+    fi
+
+    if [[ "$build_succeeded" -eq 0 ]]; then
+        echo "ERROR: unable to build release artifacts (cargo toolchain unavailable in root/user context)" >&2
+        echo "       install rust toolchain for $SUDO_USER or set rustup default, then re-run installer" >&2
+        exit 1
     fi
 
     if [[ -x "$release_dir/dax-authd" && -x "$release_dir/dax-auth" && -f "$release_dir/libpam_dax_auth.so" ]]; then
