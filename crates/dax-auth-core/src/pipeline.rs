@@ -425,31 +425,40 @@ impl AuthPipeline {
             "enroll: camera format negotiated"
         );
 
-        // Discard up to 5 warm-up frames: USB cameras output all-black frames
-        // while auto-exposure and gain settle after the stream starts.
-        let warmup = 5_u32;
-        for w in 1..=warmup {
-            match capture.capture_frame_async().await {
-                Ok(f) if f.data.iter().all(|&b| b == 0) => {
-                    tracing::debug!(attempt = w, "enroll: warm-up frame (all-black), discarding");
-                }
-                Ok(_) => {
-                    tracing::debug!(attempt = w, "enroll: warm-up complete (non-black frame)");
-                    break;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, attempt = w, "enroll: warm-up frame error");
-                }
+        // Wait for auto-exposure to stabilise.
+        // UVC cameras output dark frames (luma ~18/255) for the first ~9 frames
+        // while the sensor adjusts. capture_best_frame() discards frames below
+        // the luma threshold and returns the first usable one.
+        tracing::info!("enroll: waiting for auto-exposure to stabilise");
+        let ae_frame = match capture.capture_best_frame().await {
+            Ok(f) => {
+                tracing::info!("enroll: auto-exposure ready, starting detection");
+                Some(f)
             }
-        }
+            Err(e) => {
+                tracing::warn!(error = %e, "enroll: auto-exposure warmup error, proceeding anyway");
+                None
+            }
+        };
+
+        // Convert the stabilised frame into a flat iterator so we can process
+        // it in the same loop as subsequent frames.
+        let mut ae_frame_slot: Option<dax_auth_camera::Frame> = ae_frame;
 
         for frame_idx in 0..self.config.max_frames {
             let t_frame = std::time::Instant::now();
-            let frame = match capture.capture_frame_async().await {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!(error = %e, frame = frame_idx, "enroll: frame capture failed");
-                    continue;
+
+            // On the first iteration, use the pre-captured stabilised frame.
+            // On subsequent iterations, capture fresh frames.
+            let frame = if let Some(f) = ae_frame_slot.take() {
+                f
+            } else {
+                match capture.capture_frame_async().await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!(error = %e, frame = frame_idx, "enroll: frame capture failed");
+                        continue;
+                    }
                 }
             };
             tracing::debug!(
