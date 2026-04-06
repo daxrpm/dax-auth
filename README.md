@@ -243,15 +243,15 @@ download instructions, and ONNX export procedures.
 
 ```
 models/
-├── retinaface_10g.onnx   — Face detection (MIT license)
-├── arcface_r100.onnx     — Face recognition (Apache 2.0)
-└── minifasnetv2.onnx     — 2D anti-spoofing (Apache 2.0)
+├── det_10g.onnx          — Face detection (MIT license)
+├── w600k_r50.onnx        — Face recognition (Apache 2.0)
+└── minifasnet_v2.onnx    — 2D anti-spoofing (Apache 2.0)
 ```
 
 Download all models:
 
 ```bash
-bash scripts/download_models.sh /var/lib/dax-auth/models
+bash scripts/download_models.sh --dir /var/lib/dax-auth/models
 ```
 
 ---

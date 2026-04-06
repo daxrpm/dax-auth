@@ -47,9 +47,13 @@ package() {
     install -Dm644 target/release/libpam_dax_auth.so \
         "${pkgdir}/usr/lib/security/pam_dax_auth.so"
 
-    # Setup script (used by systemd ExecStartPre)
+    # Runtime and installer scripts
     install -Dm755 scripts/setup-runtime-dir.sh \
         "${pkgdir}/usr/lib/dax-auth/setup-runtime-dir.sh"
+    install -Dm755 scripts/download_models.sh \
+        "${pkgdir}/usr/lib/dax-auth/download_models.sh"
+    install -Dm755 scripts/install.sh \
+        "${pkgdir}/usr/lib/dax-auth/install.sh"
 
     # Default config (noreplace — do not overwrite user config on upgrade)
     install -Dm640 config/config.toml \
@@ -67,34 +71,7 @@ package() {
 }
 
 post_install() {
-    # Create system user
-    if ! getent passwd dax-auth > /dev/null; then
-        useradd --system --no-create-home \
-                --shell /usr/sbin/nologin \
-                --user-group \
-                --comment "dax-auth facial authentication daemon" \
-                dax-auth
-        usermod -a -G video dax-auth
-    fi
-
-    # Create data directories
-    install -d -m 750 -o dax-auth -g dax-auth /var/lib/dax-auth
-    install -d -m 750 -o dax-auth -g dax-auth /var/lib/dax-auth/models
-    install -d -m 700 -o dax-auth -g dax-auth /var/lib/dax-auth/users
-
-    # Generate master key
-    if [ ! -f /etc/dax-auth/master.key ]; then
-        dd if=/dev/urandom bs=32 count=1 of=/etc/dax-auth/master.key 2>/dev/null
-        chown root:dax-auth /etc/dax-auth/master.key
-        chmod 0640 /etc/dax-auth/master.key
-    fi
-
-    echo ""
-    echo "==> dax-auth: Enable and start the daemon:"
-    echo "      systemctl enable --now dax-authd"
-    echo "==> dax-auth: Enroll your face:"
-    echo "      dax-auth enroll"
-    echo "==> dax-auth: Configure PAM (see /etc/dax-auth/pam-example.conf)"
+    /usr/lib/dax-auth/install.sh
     systemctl daemon-reload
 }
 

@@ -35,7 +35,7 @@ pub const DETECTION_MODELS: &[ModelInfo] = &[ModelInfo {
     description: "InsightFace SCRFD-10G — efficient face detector, 10 GFLOPs at 640×640",
     license: "MIT",
     filename: "det_10g.onnx",
-    sha256: None,
+    sha256: Some("5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"),
     download_url: Some(
         "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
     ),
@@ -49,7 +49,7 @@ pub const RECOGNITION_MODELS: &[ModelInfo] = &[ModelInfo {
     description: "ArcFace WebFace600K ResNet50 — high accuracy face recognition",
     license: "Apache-2.0",
     filename: "w600k_r50.onnx",
-    sha256: None,
+    sha256: Some("4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"),
     download_url: Some(
         "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
     ),
@@ -104,7 +104,7 @@ impl ModelRegistry {
         // ── Detector (RetinaFace) ─────────────────────────────────────────────
         let detector_path = config.models_dir.join(&config.detector_model);
         check_file_exists(&detector_path)?;
-        // SHA-256 check: in Phase 1 hashes are None, so this is a no-op
+        // SHA-256 check is enforced whenever the model metadata includes a hash.
         if let Some(info) = DETECTION_MODELS
             .iter()
             .find(|m| m.filename == config.detector_model)

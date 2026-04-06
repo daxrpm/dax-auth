@@ -9,6 +9,10 @@ After=local-fs.target
 After=systemd-udev-settle.service
 Wants=systemd-udev-settle.service
 
+# Don't restart if it fails immediately (misconfiguration)
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
 [Service]
 Type=notify
 NotifyAccess=main
@@ -27,9 +31,6 @@ ExecStopPost=/bin/rm -f /run/dax-auth/daemon.sock
 # Restart on failure (camera errors, model load failures)
 Restart=on-failure
 RestartSec=3s
-# Don't restart if it fails immediately (misconfiguration)
-StartLimitIntervalSec=60
-StartLimitBurst=3
 
 # ── Hardening ─────────────────────────────────────────────────────────────────
 # Filesystem isolation
@@ -40,7 +41,8 @@ ReadWritePaths=/run/dax-auth /var/lib/dax-auth
 
 # Process isolation
 NoNewPrivileges=true
-PrivateDevices=false   # needs /dev/video* (camera)
+# Keep device namespace shared because daemon needs /dev/video*
+PrivateDevices=false
 DeviceAllow=/dev/video* rw
 DeviceAllow=char-v4l rw
 

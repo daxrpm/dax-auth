@@ -72,10 +72,10 @@ pub struct CoreConfig {
     /// Directory where ONNX model files are stored.
     pub models_dir: PathBuf,
 
-    /// Face detection model filename (default: `retinaface_10g.onnx`).
+    /// Face detection model filename (default: `det_10g.onnx`).
     pub detector_model: String,
 
-    /// Face recognition model filename (default: `arcface_r100.onnx`).
+    /// Face recognition model filename (default: `w600k_r50.onnx`).
     pub recognizer_model: String,
 
     /// Anti-spoofing model filename (default: `minifasnet_v2.onnx`).

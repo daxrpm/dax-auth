@@ -51,6 +51,10 @@ install -m 644 packaging/pam-dax-auth.conf \
     %{buildroot}%{_sysconfdir}/dax-auth/pam-example.conf
 install -m 755 scripts/setup-runtime-dir.sh \
     %{buildroot}%{_libdir}/dax-auth/setup-runtime-dir.sh
+install -m 755 scripts/download_models.sh \
+    %{buildroot}%{_libdir}/dax-auth/download_models.sh
+install -m 755 scripts/install.sh \
+    %{buildroot}%{_libdir}/dax-auth/install.sh
 install -m 644 packaging/dax-authd.service \
     %{buildroot}%{_unitdir}/dax-authd.service
 
@@ -66,27 +70,9 @@ getent passwd dax-auth > /dev/null || \
 usermod -a -G video dax-auth 2>/dev/null || true
 
 %post
-# Create data directories
-install -d -m 750 -o dax-auth -g dax-auth /var/lib/dax-auth
-install -d -m 750 -o dax-auth -g dax-auth /var/lib/dax-auth/models
-install -d -m 700 -o dax-auth -g dax-auth /var/lib/dax-auth/users
-
-# Generate master key if absent
-if [ ! -f %{_sysconfdir}/dax-auth/master.key ]; then
-    dd if=/dev/urandom bs=32 count=1 \
-        of=%{_sysconfdir}/dax-auth/master.key 2>/dev/null
-    chown root:dax-auth %{_sysconfdir}/dax-auth/master.key
-    chmod 0640 %{_sysconfdir}/dax-auth/master.key
-fi
+%{_libdir}/dax-auth/install.sh
 
 %systemd_post dax-authd.service
-
-echo ""
-echo "dax-auth installed. Next steps:"
-echo "  1. Download models and start daemon:"
-echo "     sudo systemctl enable --now dax-authd"
-echo "  2. Enroll your face:   dax-auth enroll"
-echo "  3. Configure PAM:      see %{_sysconfdir}/dax-auth/pam-example.conf"
 
 %preun
 %systemd_preun dax-authd.service
@@ -101,6 +87,8 @@ echo "  3. Configure PAM:      see %{_sysconfdir}/dax-auth/pam-example.conf"
 %{_bindir}/dax-auth
 %{_libdir}/security/pam_dax_auth.so
 %{_libdir}/dax-auth/setup-runtime-dir.sh
+%{_libdir}/dax-auth/download_models.sh
+%{_libdir}/dax-auth/install.sh
 %{_unitdir}/dax-authd.service
 %config(noreplace) %{_sysconfdir}/dax-auth/config.toml
 %{_sysconfdir}/dax-auth/pam-example.conf

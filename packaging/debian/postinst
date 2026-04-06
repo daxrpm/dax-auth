@@ -4,60 +4,17 @@ set -e
 
 DAX_USER="dax-auth"
 DAX_GROUP="dax-auth"
+INSTALLER="/usr/lib/dax-auth/install.sh"
 
 case "$1" in
     configure)
-        # Create system user if it doesn't exist
-        if ! getent passwd "${DAX_USER}" > /dev/null 2>&1; then
-            adduser --system \
-                    --no-create-home \
-                    --shell /usr/sbin/nologin \
-                    --group \
-                    --gecos "dax-auth facial authentication daemon" \
-                    "${DAX_USER}"
+        if [ -x "${INSTALLER}" ]; then
+            "${INSTALLER}"
+        else
+            echo "dax-auth: installer missing at ${INSTALLER}" >&2
+            echo "dax-auth: run the installer manually after fixing package layout" >&2
+            exit 1
         fi
-
-        # Add dax-auth user to the video group for camera access
-        if ! groups "${DAX_USER}" | grep -q '\bvideo\b'; then
-            usermod -a -G video "${DAX_USER}"
-        fi
-
-        # Create data directories
-        install -d -m 750 -o "${DAX_USER}" -g "${DAX_GROUP}" \
-            /var/lib/dax-auth
-        install -d -m 750 -o "${DAX_USER}" -g "${DAX_GROUP}" \
-            /var/lib/dax-auth/models
-        install -d -m 700 -o "${DAX_USER}" -g "${DAX_GROUP}" \
-            /var/lib/dax-auth/users
-
-        # Generate master key if absent
-        if [ ! -f /etc/dax-auth/master.key ]; then
-            dd if=/dev/urandom bs=32 count=1 of=/etc/dax-auth/master.key 2>/dev/null
-            chown root:"${DAX_GROUP}" /etc/dax-auth/master.key
-            chmod 0640 /etc/dax-auth/master.key
-            echo "dax-auth: master key generated at /etc/dax-auth/master.key"
-        fi
-
-        # Fix config file ownership
-        if [ -f /etc/dax-auth/config.toml ]; then
-            chown root:"${DAX_GROUP}" /etc/dax-auth/config.toml
-            chmod 0640 /etc/dax-auth/config.toml
-        fi
-
-        # Enable systemd service
-        if command -v systemctl > /dev/null 2>&1 && systemctl is-system-running --quiet 2>/dev/null; then
-            systemctl daemon-reload
-            systemctl enable dax-authd
-            echo "dax-auth: daemon enabled. Run: systemctl start dax-authd"
-        fi
-
-        echo ""
-        echo "dax-auth installed. Next steps:"
-        echo "  1. Download models:    sudo /usr/lib/dax-auth/setup-runtime-dir.sh"
-        echo "     (or run scripts/download_models.sh /var/lib/dax-auth/models)"
-        echo "  2. Start daemon:       sudo systemctl start dax-authd"
-        echo "  3. Enroll your face:   dax-auth enroll"
-        echo "  4. Configure PAM:      see /etc/dax-auth/pam-example.conf"
         ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)

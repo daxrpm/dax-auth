@@ -7,8 +7,8 @@ This directory is intentionally empty in the repository. Model files are not tra
 
 | Model | File | Task | License | Format | Size |
 |---|---|---|---|---|---|
-| RetinaFace-10G | `retinaface_10g.onnx` | Face detection | MIT | ONNX opset 11 | ~1.7 MB |
-| ArcFace R100 | `arcfaceresnet100-8.onnx` | Face recognition | Apache 2.0 | ONNX opset 8 | ~249 MB |
+| SCRFD-10G | `det_10g.onnx` | Face detection | MIT | ONNX opset 11 | ~1.7 MB |
+| ArcFace R50 (WebFace600K) | `w600k_r50.onnx` | Face recognition | Apache 2.0 | ONNX opset 11 | ~166 MB |
 | MiniFASNetV2 | `minifasnet_v2.onnx` | 2D anti-spoofing | Apache 2.0 | ONNX opset 11 | ~4 MB |
 
 > **Note on filenames:** The filenames above match what `config/default.toml` and `dax-auth-core`
@@ -37,30 +37,22 @@ See `scripts/download_models.sh --help` for all options.
 
 ## Sources
 
-### RetinaFace-10G (`retinaface_10g.onnx`)
+### SCRFD-10G (`det_10g.onnx`)
 
-- **Source:** ONNX Model Zoo — <https://github.com/onnx/models>
-- **Direct download:**
-  <https://github.com/onnx/models/raw/main/validated/vision/body_analysis/retinaface/model/retinaface-10g.onnx>
-- **Note:** The file from ONNX Model Zoo is already named `retinaface-10g.onnx`; the download
-  script saves it as `retinaface_10g.onnx` (underscores). No manual rename needed when using
-  the script.
-- **SHA-256:** TBD — run `sha256sum retinaface_10g.onnx` after download and update this file
+- **Source:** InsightFace `buffalo_l` release bundle — <https://github.com/deepinsight/insightface/releases>
+- **Bundle:** <https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip>
+- **SHA-256:** `5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91`
 - **Size:** ~1.7 MB
 - **License:** MIT
 
 ---
 
-### ArcFace R100 (`arcfaceresnet100-8.onnx`)
+### ArcFace R50 (`w600k_r50.onnx`)
 
-- **Source:** ONNX Model Zoo —
-  <https://github.com/onnx/models/tree/main/validated/vision/body_analysis/arcface>
-- **Direct download:**
-  <https://github.com/onnx/models/raw/main/validated/vision/body_analysis/arcface/model/arcfaceresnet100-8.onnx>
-- **Note:** The file from ONNX Model Zoo is already named `arcfaceresnet100-8.onnx`. The download
-  script saves it with that exact name, which is what the daemon expects by default.
-- **SHA-256:** TBD — run `sha256sum arcfaceresnet100-8.onnx` after download and update this file
-- **Size:** ~249 MB
+- **Source:** InsightFace `buffalo_l` release bundle — <https://github.com/deepinsight/insightface/releases>
+- **Bundle:** <https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip>
+- **SHA-256:** `4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43`
+- **Size:** ~166 MB
 - **License:** Apache 2.0
 
 ---
@@ -72,11 +64,12 @@ See `scripts/download_models.sh --help` for all options.
 - **PyTorch weights:**
   <https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/blob/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.pth>
 - **License:** Apache 2.0
-- **SHA-256:** TBD — run `sha256sum minifasnet_v2.onnx` after export and update this file
+- **SHA-256:** Optional (set in deployment policy when a trusted artifact hash is established)
 - **Size:** ~4 MB (ONNX export)
 
 The upstream repository distributes PyTorch `.pth` weights, not a pre-built ONNX file.
-The download script will fetch the `.pth` and print instructions for the ONNX export step.
+`scripts/download_models.sh` installs and verifies the required production models
+(`det_10g.onnx` + `w600k_r50.onnx`). MiniFASNetV2 export remains a manual hardening step.
 
 #### Manual ONNX export (requires Python 3.10+, PyTorch, onnx, onnxsim)
 
@@ -128,7 +121,8 @@ dir = "/var/lib/dax-auth/models"   # production default
 For development, you can override this to point to the `models/` directory inside the repository
 by setting `models.dir` in your local `config.toml`.
 
-The daemon verifies the SHA-256 of each model at startup (once hashes are filled in). To manually
+The daemon verifies SHA-256 for each model that has a configured hash. By default, `det_10g.onnx`
+and `w600k_r50.onnx` are enforced. To manually
 verify:
 
 ```bash
@@ -146,8 +140,8 @@ checksum is configured and does not match, the daemon exits with `CoreError::Mod
 To verify manually before starting the daemon:
 
 ```bash
-sha256sum /var/lib/dax-auth/models/retinaface_10g.onnx
-sha256sum /var/lib/dax-auth/models/arcfaceresnet100-8.onnx
+sha256sum /var/lib/dax-auth/models/det_10g.onnx
+sha256sum /var/lib/dax-auth/models/w600k_r50.onnx
 sha256sum /var/lib/dax-auth/models/minifasnet_v2.onnx
 ```
 
