@@ -21,7 +21,7 @@ use dax_auth_core::{AuthPipeline, CoreError};
 use dax_auth_proto::{
     codec,
     response::{AuthResult, DenyReason},
-    AuthRequest, AuthResponse, PROTOCOL_VERSION,
+    AuthRequest, AuthResponse, SecurityMode, PROTOCOL_VERSION,
 };
 
 /// Handles a single IPC connection (one authentication attempt).
@@ -33,13 +33,23 @@ pub struct SessionHandler {
     stream: UnixStream,
     /// Shared ML pipeline — access serialised via Mutex.
     pipeline: Arc<Mutex<AuthPipeline>>,
+    /// Security mode configured by daemon config (authoritative).
+    security_mode: SecurityMode,
 }
 
 impl SessionHandler {
     /// Create a new session handler for an accepted connection.
     #[must_use]
-    pub fn new(stream: UnixStream, pipeline: Arc<Mutex<AuthPipeline>>) -> Self {
-        Self { stream, pipeline }
+    pub fn new(
+        stream: UnixStream,
+        pipeline: Arc<Mutex<AuthPipeline>>,
+        security_mode: SecurityMode,
+    ) -> Self {
+        Self {
+            stream,
+            pipeline,
+            security_mode,
+        }
     }
 
     /// Handle the full request-response lifecycle for this connection.
@@ -53,14 +63,14 @@ impl SessionHandler {
         let mut header = [0u8; 8];
         self.stream.read_exact(&mut header).await?;
 
-        let length = u32::from_le_bytes(
-            header[4..8]
-                .try_into()
-                .expect("slice is exactly 4 bytes"),
-        ) as usize;
+        let length =
+            u32::from_le_bytes(header[4..8].try_into().expect("slice is exactly 4 bytes")) as usize;
 
         if length > codec::MAX_FRAME_BYTES as usize {
-            anyhow::bail!("frame too large: {length} bytes (max {})", codec::MAX_FRAME_BYTES);
+            anyhow::bail!(
+                "frame too large: {length} bytes (max {})",
+                codec::MAX_FRAME_BYTES
+            );
         }
 
         // ── 2. Read the payload ────────────────────────────────────────────────
@@ -69,8 +79,8 @@ impl SessionHandler {
         self.stream.read_exact(&mut frame[8..]).await?;
 
         // ── 3. Decode request ──────────────────────────────────────────────────
-        let request: AuthRequest = codec::decode(&frame)
-            .map_err(|e| anyhow::anyhow!("decode error: {e}"))?;
+        let request: AuthRequest =
+            codec::decode(&frame).map_err(|e| anyhow::anyhow!("decode error: {e}"))?;
 
         let session_id = request.session_id;
         // NOTE: Do NOT log username at debug level — it is PII.
@@ -86,7 +96,7 @@ impl SessionHandler {
         let pipeline_result = {
             let mut pipeline = self.pipeline.lock().await;
             pipeline
-                .authenticate(request.user.as_str(), request.mode, camera_kind)
+                .authenticate(request.user.as_str(), self.security_mode, camera_kind)
                 .await
         };
         // `request` (containing UserId) is dropped here → username zeroed.
@@ -146,8 +156,7 @@ impl SessionHandler {
             duration_ms,
         };
 
-        let encoded = codec::encode(&response)
-            .map_err(|e| anyhow::anyhow!("encode error: {e}"))?;
+        let encoded = codec::encode(&response).map_err(|e| anyhow::anyhow!("encode error: {e}"))?;
 
         self.stream.write_all(&encoded).await?;
         self.stream.flush().await?;

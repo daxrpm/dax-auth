@@ -36,26 +36,24 @@ use dax_auth_core::AuthPipeline;
 use server::DaemonServer;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     // Initialize structured logging — send to journald if available, stderr otherwise
     init_logging();
 
-    info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "dax-authd starting"
-    );
+    info!(version = env!("CARGO_PKG_VERSION"), "dax-authd starting");
 
     if let Err(e) = run().await {
         // Use {e:#} to print the full anyhow error chain (cause-by-cause).
         error!(error = %format!("{e:#}"), "daemon exited with error");
-        std::process::exit(1);
+        return std::process::ExitCode::from(1);
     }
+
+    std::process::ExitCode::SUCCESS
 }
 
 async fn run() -> anyhow::Result<()> {
     // ── 1. Load config ─────────────────────────────────────────────────────────
-    let config = DaemonConfig::load()
-        .context("failed to load daemon configuration")?;
+    let config = DaemonConfig::load().context("failed to load daemon configuration")?;
 
     info!(
         socket = %config.socket_path.display(),
@@ -75,13 +73,21 @@ async fn run() -> anyhow::Result<()> {
     let cancel = tokio_util::sync::CancellationToken::new();
 
     // ── 4. Bind Unix socket ────────────────────────────────────────────────────
-    let server = DaemonServer::bind(&config.socket_path, Arc::clone(&pipeline), cancel.clone())
-        .await
-        .context("failed to bind Unix socket")?;
+    let server = DaemonServer::bind(
+        &config.socket_path,
+        Arc::clone(&pipeline),
+        config.security_mode,
+        cancel.clone(),
+    )
+    .await
+    .context("failed to bind Unix socket")?;
 
     // ── 5. Notify systemd: READY=1 ────────────────────────────────────────────
     sd_notify()?;
-    info!("dax-authd ready — accepting connections on {}", config.socket_path.display());
+    info!(
+        "dax-authd ready — accepting connections on {}",
+        config.socket_path.display()
+    );
 
     // ── 6. Spawn signal handler ───────────────────────────────────────────────
     let cancel_clone = cancel.clone();
@@ -121,17 +127,14 @@ fn sd_notify() -> anyhow::Result<()> {
 fn init_logging() {
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Try journald first (systemd environment), fall back to stderr
     let registry = tracing_subscriber::registry().with(filter);
 
     match tracing_journald::layer() {
         Ok(journald_layer) => {
-            registry
-                .with(journald_layer)
-                .init();
+            registry.with(journald_layer).init();
         }
         Err(_) => {
             registry

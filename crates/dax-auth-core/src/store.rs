@@ -106,11 +106,6 @@ impl FaceStore {
     ///
     /// Reads the 32-byte master key from `/etc/dax-auth/master.key`.
     ///
-    /// **Phase 1 development fallback**: if the master key file is absent, a
-    /// random key is generated and saved to `/tmp/dax-auth-master.key` with a
-    /// `warn!` log. This allows testing without a full system installation. In
-    /// production the file must exist before starting the daemon.
-    ///
     /// # Errors
     /// Returns [`CoreError::Store`] if the key file cannot be read or has the
     /// wrong length.
@@ -562,48 +557,20 @@ fn stored_embedding_from_face(embedding: &FaceEmbedding) -> StoredEmbedding {
 
 /// Read the 32-byte master key from `/etc/dax-auth/master.key`.
 ///
-/// **Phase 1 fallback**: if the file is absent, generates a random key and
-/// writes it to `/tmp/dax-auth-master.key`, logging a warning. This enables
-/// development and testing without a full system installation.
-///
 /// # Errors
-/// Returns [`CoreError::Store`] if the file exists but cannot be read or has
+/// Returns [`CoreError::Store`] if the file is missing, cannot be read, or has
 /// the wrong length.
 fn read_or_generate_master_key() -> Result<Zeroizing<[u8; 32]>, CoreError> {
     let production_path = Path::new(MASTER_KEY_PATH);
 
-    if production_path.exists() {
-        return read_master_key_from(production_path);
+    if !production_path.exists() {
+        return Err(CoreError::Store(format!(
+            "master key file missing at {} (run installer to generate it)",
+            MASTER_KEY_PATH
+        )));
     }
 
-    // Phase 1 development fallback.
-    tracing::warn!(
-        path = MASTER_KEY_PATH,
-        "master key file not found — generating ephemeral key for Phase 1 development. \
-         This is INSECURE: enrollments will be lost across daemon restarts unless the \
-         same key is restored. Create {} for production use.",
-        MASTER_KEY_PATH
-    );
-
-    let fallback_path = Path::new("/tmp/dax-auth-master.key");
-
-    if fallback_path.exists() {
-        return read_master_key_from(fallback_path);
-    }
-
-    // Generate and persist a new random key for this development session.
-    let mut key_bytes = Zeroizing::new([0u8; 32]);
-    OsRng.fill_bytes(key_bytes.as_mut());
-
-    std::fs::write(fallback_path, key_bytes.as_ref())
-        .map_err(|e| CoreError::Store(format!("cannot write fallback master key: {e}")))?;
-
-    tracing::info!(
-        path = %fallback_path.display(),
-        "ephemeral master key written"
-    );
-
-    Ok(key_bytes)
+    read_master_key_from(production_path)
 }
 
 /// Read a 32-byte master key from the given path.

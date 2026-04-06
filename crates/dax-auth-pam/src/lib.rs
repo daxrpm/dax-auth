@@ -6,7 +6,8 @@
 //! - This is a `cdylib` — loaded into the PAM caller's process space
 //! - MUST be minimal: no tokio, no async, no heavy allocations
 //! - Uses blocking I/O to communicate with `dax-authd` via Unix socket
-//! - Must handle daemon-not-running gracefully (fall through to next PAM module)
+//! - Daemon/I/O failures are fail-closed by default (`PAM_AUTH_ERR`)
+//! - Optional compatibility mode `fail_open=1` allows PAM fallthrough (`PAM_IGNORE`)
 //! - All PAM-required C symbols are exported via `#[no_mangle]`
 //!
 //! ## PAM conversation
@@ -78,9 +79,11 @@ const DAEMON_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 pub unsafe extern "C" fn pam_sm_authenticate(
     pamh: *mut libc::c_void,
     _flags: i32,
-    _argc: i32,
-    _argv: *const *const libc::c_char,
+    argc: i32,
+    argv: *const *const libc::c_char,
 ) -> i32 {
+    let options = parse_module_options(argc, argv);
+
     match authenticate_inner(pamh) {
         Ok(true) => PAM_SUCCESS,
         Ok(false) => PAM_AUTH_ERR,
@@ -89,12 +92,19 @@ pub unsafe extern "C" fn pam_sm_authenticate(
             PAM_AUTH_ERR
         }
         Err(PamModuleError::DaemonUnavailable) => {
-            // Daemon not running — transparent fallthrough to next module (e.g., password)
-            log_syslog(
-                libc::LOG_WARNING,
-                "dax-auth: daemon unavailable, falling through",
-            );
-            PAM_IGNORE
+            if options.fail_open {
+                log_syslog(
+                    libc::LOG_WARNING,
+                    "dax-auth: daemon unavailable, fail_open enabled, falling through",
+                );
+                PAM_IGNORE
+            } else {
+                log_syslog(
+                    libc::LOG_ERR,
+                    "dax-auth: daemon unavailable, fail-closed denying authentication",
+                );
+                PAM_AUTH_ERR
+            }
         }
         Err(PamModuleError::Protocol(ref msg)) => {
             let s = format!("dax-auth: protocol error: {msg}");
@@ -104,7 +114,11 @@ pub unsafe extern "C" fn pam_sm_authenticate(
         Err(PamModuleError::Io(ref e)) => {
             let s = format!("dax-auth: I/O error: {e}");
             log_syslog(libc::LOG_ERR, &s);
-            PAM_IGNORE
+            if options.fail_open {
+                PAM_IGNORE
+            } else {
+                PAM_AUTH_ERR
+            }
         }
     }
 }
@@ -271,6 +285,15 @@ fn connect_with_timeout(path: &str, timeout: Duration) -> io::Result<UnixStream>
     if connect_err.raw_os_error() != Some(libc::EINPROGRESS) {
         unsafe { libc::close(fd) };
         return Err(connect_err);
+    }
+
+    let fd_setsize = libc::FD_SETSIZE as libc::c_int;
+    if fd < 0 || fd >= fd_setsize {
+        unsafe { libc::close(fd) };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("socket fd out of range for FD_SET: {fd} >= FD_SETSIZE={fd_setsize}"),
+        ));
     }
 
     // select() with timeout
@@ -460,6 +483,80 @@ fn log_syslog(priority: libc::c_int, message: &str) {
     }
 }
 
+/// Parsed PAM module runtime options.
+#[derive(Debug, Clone, Copy)]
+struct ModuleOptions {
+    /// If true, daemon/I/O failures return `PAM_IGNORE` instead of `PAM_AUTH_ERR`.
+    fail_open: bool,
+}
+
+impl Default for ModuleOptions {
+    fn default() -> Self {
+        Self { fail_open: false }
+    }
+}
+
+/// Parse PAM module options from `argc`/`argv`.
+///
+/// Supported option:
+/// - `fail_open=1`
+/// - `fail_open=true`
+fn parse_module_options(argc: i32, argv: *const *const libc::c_char) -> ModuleOptions {
+    if argc <= 0 || argv.is_null() {
+        return ModuleOptions::default();
+    }
+
+    let mut options = ModuleOptions::default();
+
+    for i in 0..argc {
+        let arg_ptr = unsafe { *argv.add(i as usize) };
+        if arg_ptr.is_null() {
+            continue;
+        }
+
+        let arg = match unsafe { std::ffi::CStr::from_ptr(arg_ptr) }.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                log_syslog(libc::LOG_WARNING, "dax-auth: ignoring non-utf8 PAM option");
+                continue;
+            }
+        };
+
+        if let Some(value) = arg.strip_prefix("fail_open=") {
+            options.fail_open = parse_bool_option(value).unwrap_or_else(|| {
+                log_syslog(
+                    libc::LOG_WARNING,
+                    "dax-auth: invalid fail_open option value, using fail-closed",
+                );
+                false
+            });
+        }
+    }
+
+    options
+}
+
+/// Parse common boolean option forms.
+fn parse_bool_option(value: &str) -> Option<bool> {
+    if value.eq_ignore_ascii_case("1")
+        || value.eq_ignore_ascii_case("true")
+        || value.eq_ignore_ascii_case("yes")
+        || value.eq_ignore_ascii_case("on")
+    {
+        return Some(true);
+    }
+
+    if value.eq_ignore_ascii_case("0")
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off")
+    {
+        return Some(false);
+    }
+
+    None
+}
+
 // ------------------------------------------------------------------
 // pam_get_item FFI declaration
 // ------------------------------------------------------------------
@@ -486,11 +583,11 @@ extern "C" {
 enum PamModuleError {
     /// Cannot get username from PAM (PAM_AUTH_ERR).
     NoUsername,
-    /// Daemon socket not available — fall through (PAM_IGNORE).
+    /// Daemon socket not available.
     DaemonUnavailable,
     /// Protocol error (PAM_SERVICE_ERR).
     Protocol(String),
-    /// I/O error (PAM_IGNORE — treat as daemon unavailable).
+    /// I/O error while talking to daemon.
     Io(std::io::Error),
 }
 

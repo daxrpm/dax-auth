@@ -103,14 +103,6 @@ impl AuthPipeline {
             "loading ONNX models"
         );
 
-        let registry = ModelRegistry::load(&config)?;
-
-        let detector = FaceDetector::new(registry.detector);
-        // registry.anti_spoof is None when the model file is absent or disabled.
-        // LivenessDetector handles None by returning Live with confidence=1.0.
-        let liveness = LivenessDetector::new(CameraKind::Rgb, registry.anti_spoof);
-        let recognizer = FaceRecognizer::new(registry.recognizer);
-
         // Derive the storage directory from the models directory.
         // Convention: /var/lib/dax-auth/models → /var/lib/dax-auth/users
         let storage_dir = config
@@ -120,6 +112,14 @@ impl AuthPipeline {
             .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/dax-auth/users"));
 
         let store = FaceStore::open(&storage_dir)?;
+
+        let registry = ModelRegistry::load(&config)?;
+
+        let detector = FaceDetector::new(registry.detector);
+        // registry.anti_spoof is None when the model file is absent or disabled.
+        // LivenessDetector handles None by returning Live with confidence=1.0.
+        let liveness = LivenessDetector::new(CameraKind::Rgb, registry.anti_spoof);
+        let recognizer = FaceRecognizer::new(registry.recognizer);
 
         tracing::info!("auth pipeline ready");
 
@@ -248,17 +248,16 @@ impl AuthPipeline {
             };
 
             // Detect faces
-            let faces =
-                match self
-                    .detector
-                    .detect(&rgb_bytes, frame.width, frame.height, 0.5)
-                {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "detection failed");
-                        continue;
-                    }
-                };
+            let faces = match self
+                .detector
+                .detect(&rgb_bytes, frame.width, frame.height, 0.5)
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(error = %e, "detection failed");
+                    continue;
+                }
+            };
 
             if faces.is_empty() {
                 continue;
@@ -277,7 +276,10 @@ impl AuthPipeline {
             };
 
             // Liveness check (skip for IR cameras — not supported in Phase 1)
-            if !matches!(camera_kind, CameraKind::Infrared | CameraKind::RgbAndInfrared) {
+            if !matches!(
+                camera_kind,
+                CameraKind::Infrared | CameraKind::RgbAndInfrared
+            ) {
                 if self.liveness.has_model() {
                     let face_raw = face_img.as_raw().as_slice();
                     match self.liveness.check(face_raw, None) {
@@ -396,17 +398,17 @@ impl AuthPipeline {
     /// - [`CoreError::Camera`] if no camera is available or frame capture fails.
     /// - [`CoreError::Inference`] if detection or embedding inference fails.
     /// - [`CoreError::NoFaceDetected`] if no suitable face is found within `max_frames`.
-    pub async fn capture_and_embed(&mut self) -> Result<crate::embedding::FaceEmbedding, CoreError> {
+    pub async fn capture_and_embed(
+        &mut self,
+    ) -> Result<crate::embedding::FaceEmbedding, CoreError> {
         use crate::embedding::align_face;
 
         // Open the best available camera.
-        let device = CameraDevice::best_available()
-            .map_err(CoreError::Camera)?;
+        let device = CameraDevice::best_available().map_err(CoreError::Camera)?;
 
         let camera_kind = device.kind;
 
-        let mut capture = CameraCapture::open(device)
-            .map_err(CoreError::Camera)?;
+        let mut capture = CameraCapture::open(device).map_err(CoreError::Camera)?;
 
         for _frame_idx in 0..self.config.max_frames {
             let frame = match capture.capture_frame_async().await {
@@ -456,7 +458,10 @@ impl AuthPipeline {
             };
 
             // Liveness check (skip for IR cameras)
-            if !matches!(camera_kind, CameraKind::Infrared | CameraKind::RgbAndInfrared) {
+            if !matches!(
+                camera_kind,
+                CameraKind::Infrared | CameraKind::RgbAndInfrared
+            ) {
                 if self.liveness.has_model() {
                     let face_raw = face_img.as_raw().as_slice();
                     match self.liveness.check(face_raw, None) {

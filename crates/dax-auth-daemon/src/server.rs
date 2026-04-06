@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use dax_auth_core::AuthPipeline;
+use dax_auth_proto::SecurityMode;
 
 use crate::session::SessionHandler;
 
@@ -27,6 +28,8 @@ pub struct DaemonServer {
     listener: UnixListener,
     /// Shared ML pipeline (serialized via Mutex).
     pipeline: Arc<Mutex<AuthPipeline>>,
+    /// Security mode from daemon config (authoritative policy).
+    security_mode: SecurityMode,
     /// Token used to signal the accept loop to stop.
     cancel: CancellationToken,
     /// Path to the socket file — used to clean up on shutdown.
@@ -47,6 +50,7 @@ impl DaemonServer {
     pub async fn bind(
         socket_path: &Path,
         pipeline: Arc<Mutex<AuthPipeline>>,
+        security_mode: SecurityMode,
         cancel: CancellationToken,
     ) -> anyhow::Result<Self> {
         // 1. Create the parent directory (e.g. /run/dax-auth/)
@@ -73,6 +77,7 @@ impl DaemonServer {
         Ok(Self {
             listener,
             pipeline,
+            security_mode,
             cancel,
             socket_path: socket_path.to_owned(),
         })
@@ -94,6 +99,7 @@ impl DaemonServer {
         let Self {
             listener,
             pipeline,
+            security_mode,
             cancel,
             socket_path,
         } = self;
@@ -111,8 +117,13 @@ impl DaemonServer {
                     match result {
                         Ok((stream, _addr)) => {
                             let pipeline_clone = Arc::clone(&pipeline);
+                            let configured_mode = security_mode;
                             tokio::spawn(async move {
-                                let handler = SessionHandler::new(stream, pipeline_clone);
+                                let handler = SessionHandler::new(
+                                    stream,
+                                    pipeline_clone,
+                                    configured_mode,
+                                );
                                 if let Err(e) = handler.handle().await {
                                     warn!(error = %e, "session handler error");
                                 }
