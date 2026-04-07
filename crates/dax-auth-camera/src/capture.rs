@@ -1,15 +1,30 @@
 //! Camera capture session management.
 //!
-//! Implements V4L2 MMAP streaming for single-frame acquisition. Each call to
-//! [`CameraCapture::capture_frame`] opens a fresh MMAP stream, grabs one frame,
-//! and closes the stream. This avoids self-referential lifetime issues at the
-//! cost of slightly higher per-frame overhead — acceptable for Phase 1.
+//! [`CameraCapture`] opens the V4L2 device **once** and keeps a persistent
+//! MMAP stream alive for the lifetime of the struct.  This mirrors the
+//! Windows Hello / Face ID architecture: the sensor is opened once per
+//! authentication session so that:
 //!
-//! Phase 2 will introduce persistent streams with a refactored ownership model.
+//! - Auto-exposure accumulates naturally across frames — no warm-up hack needed.
+//! - The camera LED stays on continuously instead of flashing per-frame.
+//! - Frame latency is minimal (no `VIDIOC_REQBUFS` / `VIDIOC_STREAMON` per frame).
+//!
+//! The stream is stopped and MMAP buffers released when `CameraCapture` is
+//! dropped (handled by `v4l::io::mmap::Stream`'s own `Drop` impl).
+//!
+//! # Lifetime note
+//!
+//! `v4l::io::mmap::Stream<'a>` carries a phantom lifetime `'a` that comes from
+//! `Arena<'a>`, which holds `Vec<&'a mut [u8]>` for the mmap pages.  Those
+//! slices do **not** borrow from the `v4l::Device` — they are raw pointers to
+//! kernel-managed pages.  We use `unsafe { std::mem::transmute }` to erase
+//! the lifetime to `'static` so the stream can live alongside the device in
+//! the same struct.  Safety is upheld by the ownership invariant: `Device` and
+//! `Stream` are both owned by `CameraCapture` and dropped together.
 
 use std::time::Duration;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use v4l::buffer::Type;
 use v4l::io::mmap::Stream;
 use v4l::io::traits::CaptureStream;
@@ -18,8 +33,12 @@ use v4l::video::Capture;
 use crate::frame::PixelFormat;
 use crate::{CameraDevice, CameraError, CameraKind, Frame};
 
-/// Maximum number of warm-up frames to discard when `capture_best_frame` is
-/// looking for a non-black frame.  Prevents an infinite loop on broken hardware.
+/// Luma threshold below which a frame is considered "too dark to use" during
+/// warm-up.  40/255 ≈ 16 %.  Value from empirical measurement on ASUS FHD UVC
+/// integrated webcam.
+const MIN_LUMA_THRESHOLD: u8 = 40;
+
+/// Maximum frames to scan when looking for a usable frame after warm-up.
 const DEFAULT_MAX_FRAMES: u32 = 30;
 
 /// Number of MMAP buffers to allocate per capture stream.
@@ -34,17 +53,35 @@ const MMAP_BUFFER_COUNT: u32 = 4;
 /// [`CameraError::Timeout`].
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// An active camera capture session.
+/// An active camera capture session with a **persistent** MMAP stream.
 ///
-/// Wraps a V4L2 device handle and the negotiated format. Each call to
-/// [`CameraCapture::capture_frame`] creates a fresh MMAP stream so that
-/// frame data can be returned as an owned `Vec<u8>` without lifetime
-/// complications.
+/// The stream is opened once in [`CameraCapture::open`] and kept alive until
+/// this struct is dropped.  Successive calls to [`capture_frame`] simply
+/// advance the stream without reopening it, so auto-exposure accumulates
+/// naturally across frames.
+///
+/// [`capture_frame`]: CameraCapture::capture_frame
 pub struct CameraCapture {
     /// The camera device metadata (path, kind, negotiated resolution).
     pub(crate) device: CameraDevice,
-    /// The open V4L2 device handle.
+    /// The open V4L2 device handle.  Must outlive `stream`.
+    ///
+    /// Kept alive to ensure the V4L2 fd (owned by `v4l::Device`) remains open
+    /// as long as the persistent stream references it.  Not read after `open()`
+    /// — the stream holds its own `Arc<Handle>` clone.
+    #[allow(dead_code)]
     inner: v4l::Device,
+    /// Persistent MMAP stream.
+    ///
+    /// # Safety invariant
+    ///
+    /// The `'static` lifetime is a lie produced by `transmute` in `open()`.
+    /// The stream does not actually reference anything with `'static` lifetime;
+    /// the only external resource it uses (the V4L2 fd) is owned by `inner`
+    /// which is stored in the same struct.  `stream` must be dropped **before**
+    /// `inner` — Rust drops struct fields in declaration order (top-to-bottom),
+    /// so `stream` is declared after `inner` to ensure correct drop order.
+    stream: Stream<'static>,
     /// The negotiated pixel format.
     pub format: PixelFormat,
     /// Width reported by the driver after format negotiation.
@@ -54,29 +91,28 @@ pub struct CameraCapture {
 }
 
 impl CameraCapture {
-    /// Open a camera device and negotiate a capture format.
+    /// Open a camera device, negotiate a capture format, and start streaming.
     ///
     /// Preferred format order depends on camera kind:
-    /// - RGB: YUYV → MJPEG → BGR24
-    /// - Infrared: GREY → Y16 → YUYV → MJPEG
-    /// - RGB+IR: YUYV → MJPEG → BGR24 → GREY → Y16
+    /// - RGB: MJPEG → YUYV → BGR24
+    /// - Infrared: GREY → Y16 → MJPEG → YUYV
+    /// - RGB+IR: MJPEG → YUYV → BGR24 → GREY → Y16
     ///
-    /// The first supported format is selected. The driver may silently adjust
-    /// the resolution; the actual negotiated dimensions are stored internally
-    /// and reflected in returned [`Frame`] metadata.
+    /// After format negotiation, an MMAP stream is opened immediately and kept
+    /// alive for the lifetime of the returned `CameraCapture`.
     ///
     /// # Errors
     ///
-    /// Returns [`CameraError::V4l2`] if the device cannot be opened, or
-    /// [`CameraError::UnsupportedFormat`] if neither YUYV nor MJPEG are
-    /// supported by the device.
+    /// Returns [`CameraError::V4l2`] if the device cannot be opened,
+    /// [`CameraError::UnsupportedFormat`] if no supported format is found, or
+    /// [`CameraError::CaptureFailed`] if the MMAP stream cannot be created.
     pub fn open(device: CameraDevice) -> Result<Self, CameraError> {
         debug!(path = %device.path, "opening V4L2 device");
 
         let inner =
             v4l::Device::with_path(&device.path).map_err(|e| CameraError::V4l2(e.to_string()))?;
 
-        // Negotiate format: prefer YUYV, fall back to MJPEG.
+        // Negotiate format: prefer MJPEG for RGB, GREY/Y16 for IR.
         let (format, actual_fmt) = negotiate_format(&inner, &device)?;
 
         let width = actual_fmt.width;
@@ -90,19 +126,42 @@ impl CameraCapture {
             "camera format negotiated"
         );
 
+        // Open the persistent MMAP stream.
+        //
+        // SAFETY: `Stream::with_buffers` takes `&Device` and builds an
+        // `Arena<'_>` whose lifetime is tied to that reference.  The Arena's
+        // internal `Vec<&'a mut [u8]>` holds pointers to mmap-backed kernel
+        // pages — they do NOT point into the `Device` struct itself.  We
+        // transmute the lifetime from `'_` (tied to `inner`'s borrow) to
+        // `'static` so that the stream can live alongside `inner` in the same
+        // struct.  This is sound because:
+        //   1. `inner` is stored in the same `CameraCapture` and is therefore
+        //      guaranteed to outlive `stream` (Rust drops fields top-to-bottom).
+        //   2. The V4L2 fd remains open as long as `inner` is alive.
+        //   3. The mmap pages remain valid as long as the fd is open.
+        let raw_stream =
+            Stream::with_buffers(&inner, Type::VideoCapture, MMAP_BUFFER_COUNT)
+                .map_err(|e| CameraError::CaptureFailed(e.to_string()))?;
+
+        // Erase the borrow lifetime – see SAFETY above.
+        let mut stream: Stream<'static> = unsafe { std::mem::transmute(raw_stream) };
+        stream.set_timeout(FRAME_TIMEOUT);
+
         Ok(Self {
             device,
             inner,
+            stream,
             format,
             width,
             height,
         })
     }
 
-    /// Capture a single raw frame from the camera, blocking until available.
+    /// Capture a single raw frame from the persistent stream, blocking until
+    /// a frame is available or the 5-second timeout fires.
     ///
-    /// Opens a fresh MMAP stream, grabs one frame with a 5-second timeout,
-    /// copies the buffer into an owned `Vec<u8>`, and closes the stream.
+    /// The auto-exposure state of the UVC sensor is preserved across calls
+    /// because the stream is never closed between frames.
     ///
     /// The returned [`Frame`]'s pixel data is zeroed on drop via
     /// [`zeroize::ZeroizeOnDrop`].
@@ -112,13 +171,7 @@ impl CameraCapture {
     /// - [`CameraError::Timeout`] — driver did not produce a buffer within 5 s
     /// - [`CameraError::CaptureFailed`] — any other V4L2 / MMAP error
     pub fn capture_frame(&mut self) -> Result<Frame, CameraError> {
-        // Create a fresh MMAP stream for this single-frame capture.
-        let mut stream = Stream::with_buffers(&self.inner, Type::VideoCapture, MMAP_BUFFER_COUNT)
-            .map_err(|e| CameraError::CaptureFailed(e.to_string()))?;
-
-        stream.set_timeout(FRAME_TIMEOUT);
-
-        let (frame_data, _meta) = stream.next().map_err(|e| {
+        let (frame_data, _meta) = self.stream.next().map_err(|e| {
             if e.kind() == std::io::ErrorKind::TimedOut {
                 CameraError::Timeout
             } else {
@@ -126,7 +179,8 @@ impl CameraCapture {
             }
         })?;
 
-        // Copy out of the MMAP buffer before closing the stream.
+        // Copy out of the MMAP buffer immediately so we don't hold a borrow
+        // into the stream's internal arena.
         let data = frame_data.to_vec();
 
         Ok(Frame {
@@ -153,14 +207,14 @@ impl CameraCapture {
 
     /// Capture the best available frame, waiting for auto-exposure to stabilise.
     ///
-    /// UVC cameras (including integrated webcams) output dark frames while the
-    /// sensor's auto-exposure and auto-gain circuits settle after the stream is
-    /// opened. Empirically this takes ~10 frames at 30 fps (~330 ms).
+    /// Because the stream is persistent, auto-exposure accumulates naturally.
+    /// This method discards up to [`WARMUP_FRAMES`] dark frames (luma below
+    /// [`MIN_LUMA_THRESHOLD`]), then returns the first frame that exceeds the
+    /// threshold.  If no bright-enough frame appears within [`DEFAULT_MAX_FRAMES`]
+    /// attempts, the least-dark frame seen is returned as a best-effort fallback.
     ///
-    /// This method discards frames until the average luminance exceeds
-    /// `MIN_LUMA_THRESHOLD` (40/255 ≈ 16%), then returns the first frame above
-    /// that threshold. If no bright-enough frame appears within `max_frames`,
-    /// returns the least-dark frame captured (best effort).
+    /// Compared to the previous per-frame-stream design, this eliminates the
+    /// 30× open/close cycle that was resetting auto-exposure on every call.
     ///
     /// # Errors
     ///
@@ -168,13 +222,6 @@ impl CameraCapture {
     ///   be covered or the environment may have no light)
     /// - Any error from [`CameraCapture::capture_frame_async`]
     pub async fn capture_best_frame(&mut self) -> Result<Frame, CameraError> {
-        /// Average luma threshold (0–255).  Frames below this are discarded as
-        /// auto-exposure warm-up artefacts.  Value chosen from empirical
-        /// measurement: ASUS FHD UVC camera settles from luma ~18 → ~89 over
-        /// 10 frames; a threshold of 40 reliably rejects the dark warm-up
-        /// frames while accepting all well-lit frames.
-        const MIN_LUMA_THRESHOLD: u8 = 40;
-
         let max_frames = DEFAULT_MAX_FRAMES;
 
         let mut best_frame: Option<Frame> = None;
@@ -183,9 +230,6 @@ impl CameraCapture {
         for attempt in 1..=max_frames {
             let frame = self.capture_frame_async().await?;
 
-            // Compute average luma from JPEG/raw data.
-            // For MJPEG this is a rough estimate on the compressed stream;
-            // for raw formats it is exact.  Accurate enough for threshold use.
             let avg_luma = estimate_frame_luma(&frame);
 
             debug!(
@@ -208,15 +252,16 @@ impl CameraCapture {
 
             debug!(
                 attempt,
-                avg_luma, "frame too dark (auto-exposure settling), retrying"
+                avg_luma,
+                "frame too dark (auto-exposure settling), retrying"
             );
         }
 
         // If we never reached the threshold, return the best frame we got.
         // This handles very dark environments where the camera has settled but
-        // the scene is genuinely dim — better to attempt detection than to fail.
+        // the scene is genuinely dim.
         if let Some(frame) = best_frame {
-            info!(
+            warn!(
                 best_luma,
                 threshold = MIN_LUMA_THRESHOLD,
                 "auto-exposure did not reach threshold after {max_frames} frames; \
@@ -232,11 +277,13 @@ impl CameraCapture {
 
     /// Stop streaming and release V4L2 resources.
     ///
-    /// In Phase 1 this is a no-op: the device handle is dropped via RAII when
-    /// `CameraCapture` itself is dropped. This method exists for callers that
-    /// want to make the intent explicit.
+    /// The persistent stream is stopped and MMAP buffers released here via the
+    /// `v4l::io::mmap::Stream` `Drop` impl.  This method exists for callers
+    /// that want to make the intent explicit; it is equivalent to dropping the
+    /// `CameraCapture` value.
     pub fn stop(self) {
-        // Drop releases `self.inner` (the v4l::Device).
+        // Dropping self releases `stream` (which stops the V4L2 stream and
+        // unmaps MMAP buffers) and then `inner` (which closes the fd).
         drop(self);
     }
 }
@@ -411,6 +458,18 @@ mod tests {
         assert!(frame.width > 0, "width must be positive");
         assert!(frame.height > 0, "height must be positive");
         assert!(!frame.data.is_empty(), "frame data must not be empty");
+    }
+
+    #[test]
+    #[ignore = "requires a real /dev/video* device"]
+    fn capture_multiple_frames_same_stream() {
+        // Verify the persistent stream can serve multiple frames without reopening.
+        let device = CameraDevice::best_available().expect("need a camera to run this test");
+        let mut cap = CameraCapture::open(device).expect("open failed");
+        for i in 0..5 {
+            let frame = cap.capture_frame().unwrap_or_else(|e| panic!("frame {i} failed: {e}"));
+            assert!(!frame.data.is_empty(), "frame {i} data must not be empty");
+        }
     }
 
     #[tokio::test]

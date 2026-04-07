@@ -13,6 +13,38 @@ use crate::{CoreConfig, CoreError};
 use dax_auth_camera::{CameraCapture, CameraDevice, CameraKind};
 use dax_auth_proto::SecurityMode;
 
+// ─── Device selection helpers ─────────────────────────────────────────────────
+
+/// Select the best camera device for authentication using the Windows Hello
+/// IR-first strategy.
+///
+/// Priority:
+/// 1. IR-only camera (`CameraKind::Infrared`) — lighting-invariant, no AE issues
+/// 2. Combined RGB+IR camera (`CameraKind::RgbAndInfrared`)
+/// 3. RGB-only camera (`CameraKind::Rgb`) — fallback when no IR is available
+///
+/// Returns `None` if no suitable device is found on this system.
+fn select_auth_device(devices: Vec<CameraDevice>) -> Option<CameraDevice> {
+    // Try pure IR first (Windows Hello primary path).
+    if let Some(d) = devices
+        .iter()
+        .find(|d| d.kind == CameraKind::Infrared)
+        .cloned()
+    {
+        return Some(d);
+    }
+    // Then RGB+IR combo.
+    if let Some(d) = devices
+        .iter()
+        .find(|d| d.kind == CameraKind::RgbAndInfrared)
+        .cloned()
+    {
+        return Some(d);
+    }
+    // Fall back to any RGB camera.
+    devices.into_iter().find(|d| d.kind == CameraKind::Rgb)
+}
+
 // ─── FailureStage ─────────────────────────────────────────────────────────────
 
 /// The pipeline stage at which authentication failed.
@@ -186,12 +218,36 @@ impl AuthPipeline {
             });
         }
 
-        // ── 2. Open camera ─────────────────────────────────────────────────────
-        // Attempt to get the best available device; fall back to camera_kind hint.
-        let device = match CameraDevice::best_available() {
-            Ok(d) => d,
+        // ── 2. Open camera (IR-first — Windows Hello strategy) ────────────────
+        // List all devices and pick the best one using the IR-first priority
+        // order.  IR cameras are lighting-invariant and have no auto-exposure
+        // drift, making them the preferred authentication path.  Falls back to
+        // RGB when no IR device is present.
+        let device = match CameraDevice::list_all() {
+            Ok(devices) => match select_auth_device(devices) {
+                Some(d) => {
+                    tracing::info!(
+                        path = %d.path,
+                        kind = ?d.kind,
+                        "auth: selected camera device"
+                    );
+                    d
+                }
+                None => {
+                    tracing::warn!("auth: no suitable camera device found");
+                    return Ok(PipelineResult {
+                        granted: false,
+                        score: None,
+                        matched_face: None,
+                        liveness_ok: false,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        failure_stage: Some(FailureStage::CameraError),
+                        threshold,
+                    });
+                }
+            },
             Err(e) => {
-                tracing::warn!(error = %e, "camera unavailable");
+                tracing::warn!(error = %e, "auth: camera enumeration failed");
                 return Ok(PipelineResult {
                     granted: false,
                     score: None,
@@ -207,7 +263,7 @@ impl AuthPipeline {
         let mut capture = match CameraCapture::open(device) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(error = %e, "failed to open camera");
+                tracing::warn!(error = %e, "auth: failed to open camera");
                 return Ok(PipelineResult {
                     granted: false,
                     score: None,
@@ -220,21 +276,43 @@ impl AuthPipeline {
             }
         };
 
-        // ── 3–6. Frame loop ────────────────────────────────────────────────────
+        // ── 3. Auto-exposure warm-up on the persistent stream ─────────────────
+        // With a persistent stream, auto-exposure accumulates across frames
+        // naturally.  capture_best_frame() discards dark frames until AE settles
+        // (or returns the best available frame after the limit).
+        // We re-use this first good frame as the first detection input below.
+        let warmup_frame = match capture.capture_best_frame().await {
+            Ok(f) => {
+                tracing::debug!("auth: auto-exposure settled");
+                Some(f)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "auth: AE warm-up failed; continuing anyway");
+                None
+            }
+        };
+        let mut warmup_slot: Option<dax_auth_camera::Frame> = warmup_frame;
+
+        // ── 4–7. Frame loop ────────────────────────────────────────────────────
         let mut best_score: f32 = 0.0;
         let mut best_match_idx: Option<usize> = None;
         let mut liveness_passed = false;
         let mut face_was_detected = false;
         let mut last_failure = FailureStage::NoFaceDetected;
 
-        for _frame_idx in 0..self.config.max_frames {
-            // Capture
-            let frame = match capture.capture_frame_async().await {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!(error = %e, "frame capture failed");
-                    last_failure = FailureStage::CameraError;
-                    continue;
+        for frame_idx in 0..self.config.max_frames {
+            // On the first iteration, re-use the warm-up frame captured
+            // during AE settling to avoid an extra round-trip to the sensor.
+            let frame = if let Some(f) = warmup_slot.take() {
+                f
+            } else {
+                match capture.capture_frame_async().await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!(error = %e, frame = frame_idx, "auth: frame capture failed");
+                        last_failure = FailureStage::CameraError;
+                        continue;
+                    }
                 }
             };
 
@@ -242,7 +320,7 @@ impl AuthPipeline {
             let rgb_bytes = match frame.to_rgb() {
                 Ok(b) => b,
                 Err(e) => {
-                    tracing::warn!(error = %e, "frame to_rgb failed");
+                    tracing::warn!(error = %e, frame = frame_idx, "auth: frame to_rgb failed");
                     continue;
                 }
             };
@@ -403,8 +481,15 @@ impl AuthPipeline {
     ) -> Result<crate::embedding::FaceEmbedding, CoreError> {
         use crate::embedding::align_face;
 
-        // Open the best available camera.
-        let device = CameraDevice::best_available().map_err(CoreError::Camera)?;
+        // Open the best camera using the IR-first strategy (Windows Hello approach):
+        // IR is lighting-invariant and has no auto-exposure drift.  Falls back to
+        // RGB when no IR device is present.
+        let devices = CameraDevice::list_all().map_err(CoreError::Camera)?;
+        let device = select_auth_device(devices).ok_or_else(|| {
+            CoreError::Camera(dax_auth_camera::CameraError::DeviceNotFound {
+                path: "/dev/video*".into(),
+            })
+        })?;
 
         let camera_kind = device.kind;
 
@@ -425,10 +510,10 @@ impl AuthPipeline {
             "enroll: camera format negotiated"
         );
 
-        // Wait for auto-exposure to stabilise.
-        // UVC cameras output dark frames (luma ~18/255) for the first ~9 frames
-        // while the sensor adjusts. capture_best_frame() discards frames below
-        // the luma threshold and returns the first usable one.
+        // Auto-exposure warm-up on the persistent stream.
+        // Because the stream stays open between frames, AE accumulates naturally.
+        // capture_best_frame() discards dark frames until the sensor settles,
+        // then returns the first usable frame (or the best seen after the limit).
         tracing::info!("enroll: waiting for auto-exposure to stabilise");
         let ae_frame = match capture.capture_best_frame().await {
             Ok(f) => {
@@ -436,13 +521,12 @@ impl AuthPipeline {
                 Some(f)
             }
             Err(e) => {
-                tracing::warn!(error = %e, "enroll: auto-exposure warmup error, proceeding anyway");
+                tracing::warn!(error = %e, "enroll: AE warm-up error, proceeding anyway");
                 None
             }
         };
 
-        // Convert the stabilised frame into a flat iterator so we can process
-        // it in the same loop as subsequent frames.
+        // Re-use the AE-settled frame as the first detection input.
         let mut ae_frame_slot: Option<dax_auth_camera::Frame> = ae_frame;
 
         for frame_idx in 0..self.config.max_frames {

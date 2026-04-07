@@ -153,6 +153,35 @@ impl CameraDevice {
         Ok(devices)
     }
 
+    /// Returns all available V4L2 video capture devices on this system.
+    ///
+    /// Delegates to [`CameraDevice::enumerate`] and returns the full list
+    /// sorted with IR cameras first, then by resolution descending.  Unlike
+    /// [`best_available`][CameraDevice::best_available], this returns every
+    /// device so callers can implement custom selection logic (e.g. the
+    /// dual-stream IR-first authentication strategy).
+    ///
+    /// Returns `Ok(vec![])` (not an error) when no devices are found.
+    ///
+    /// # Errors
+    /// Returns `CameraError` only on unexpected I/O failures, not on missing
+    /// devices.
+    pub fn list_all() -> Result<Vec<Self>, CameraError> {
+        let mut devices = Self::enumerate()?;
+
+        // Sort: IR cameras first (lighting-invariant), then by resolution.
+        devices.sort_by_key(|d| {
+            let kind_score = match d.kind {
+                CameraKind::Infrared => 0u32,
+                CameraKind::RgbAndInfrared => 1,
+                CameraKind::Rgb => 2,
+            };
+            (kind_score, u32::MAX - d.width * d.height)
+        });
+
+        Ok(devices)
+    }
+
     /// Returns the best available camera for authentication.
     ///
     /// Preference order: `RgbAndInfrared` > `Rgb` > `Infrared`.
