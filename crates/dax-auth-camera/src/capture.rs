@@ -139,9 +139,8 @@ impl CameraCapture {
         //      guaranteed to outlive `stream` (Rust drops fields top-to-bottom).
         //   2. The V4L2 fd remains open as long as `inner` is alive.
         //   3. The mmap pages remain valid as long as the fd is open.
-        let raw_stream =
-            Stream::with_buffers(&inner, Type::VideoCapture, MMAP_BUFFER_COUNT)
-                .map_err(|e| CameraError::CaptureFailed(e.to_string()))?;
+        let raw_stream = Stream::with_buffers(&inner, Type::VideoCapture, MMAP_BUFFER_COUNT)
+            .map_err(|e| CameraError::CaptureFailed(e.to_string()))?;
 
         // Erase the borrow lifetime – see SAFETY above.
         let mut stream: Stream<'static> = unsafe { std::mem::transmute(raw_stream) };
@@ -252,8 +251,7 @@ impl CameraCapture {
 
             debug!(
                 attempt,
-                avg_luma,
-                "frame too dark (auto-exposure settling), retrying"
+                avg_luma, "frame too dark (auto-exposure settling), retrying"
             );
         }
 
@@ -292,44 +290,86 @@ impl CameraCapture {
 
 /// Estimate the average luminance of a frame as a value in `[0, 255]`.
 ///
-/// For MJPEG: samples the raw compressed bytes as a proxy (underestimates
-/// true luma but is fast and monotonically related to actual brightness).
-/// For raw formats (YUYV, GREY, Y16, BGR24): computes the true average luma.
+/// For MJPEG: **decodes the JPEG and samples actual pixel luma** — this is
+/// the only reliable method because entropy-coded JPEG bytes are uniformly
+/// distributed regardless of image brightness.  We sample a 16×16 grid of
+/// pixels (256 samples) to keep it fast.
+///
+/// For raw formats (YUYV, GREY, Y16, BGR24): directly computes true luma.
 fn estimate_frame_luma(frame: &Frame) -> u8 {
     if frame.data.is_empty() {
         return 0;
     }
 
-    let sum: u64 = match frame.format {
+    match frame.format {
         // GREY: every byte is a luma sample.
-        crate::frame::PixelFormat::Grey => frame.data.iter().map(|&b| b as u64).sum(),
-        // Y16 LE: high byte is the useful luma.
-        crate::frame::PixelFormat::Y16 => frame.data.chunks_exact(2).map(|c| c[1] as u64).sum(),
-        // YUYV: Y bytes are at even indices (0, 2, 4, ...).
-        crate::frame::PixelFormat::Yuyv => frame
-            .data
-            .iter()
-            .step_by(2)
-            .map(|&b| b as u64)
-            .sum::<u64>()
-            .saturating_mul(2), // adjust to full-pixel count denominator below
-        // BGR24: approximate luma = 0.114R + 0.587G + 0.299B ≈ (B+G+R)/3
-        crate::frame::PixelFormat::Bgr24 => frame
-            .data
-            .chunks_exact(3)
-            .map(|c| {
-                let (b, g, r) = (c[0] as u32, c[1] as u32, c[2] as u32);
-                ((3 * b + 6 * g + r) / 10) as u64
-            })
-            .sum(),
-        // MJPEG: sample raw bytes as proxy.  JPEG entropy-coded bytes are
-        // spread through a wide range, but very dark frames produce much
-        // smaller files with lower average byte values.
-        crate::frame::PixelFormat::Mjpeg => frame.data.iter().map(|&b| b as u64).sum(),
-    };
-
-    let n = frame.data.len() as u64;
-    (sum.saturating_div(n).min(255)) as u8
+        crate::frame::PixelFormat::Grey => {
+            let sum: u64 = frame.data.iter().map(|&b| b as u64).sum();
+            (sum / frame.data.len() as u64).min(255) as u8
+        }
+        // Y16 LE: high byte carries most luma information.
+        crate::frame::PixelFormat::Y16 => {
+            let sum: u64 = frame.data.chunks_exact(2).map(|c| c[1] as u64).sum();
+            let n = (frame.data.len() / 2) as u64;
+            (sum.saturating_div(n).min(255)) as u8
+        }
+        // YUYV: luma samples are at even byte offsets (Y0, Y1, Y2 ...).
+        crate::frame::PixelFormat::Yuyv => {
+            let samples: Vec<u64> = frame.data.iter().step_by(2).map(|&b| b as u64).collect();
+            let sum: u64 = samples.iter().sum();
+            (sum.saturating_div(samples.len() as u64).min(255)) as u8
+        }
+        // BGR24: BT.601 luma approximation.
+        crate::frame::PixelFormat::Bgr24 => {
+            let sum: u64 = frame
+                .data
+                .chunks_exact(3)
+                .map(|c| {
+                    let (b, g, r) = (c[0] as u32, c[1] as u32, c[2] as u32);
+                    // 0.299R + 0.587G + 0.114B scaled ×1000 then /1000
+                    ((299 * r + 587 * g + 114 * b) / 1000) as u64
+                })
+                .sum();
+            let n = (frame.data.len() / 3) as u64;
+            (sum.saturating_div(n).min(255)) as u8
+        }
+        // MJPEG: must decode to get real pixel values.
+        // We decode the full JPEG (fast with the `image` crate), then sample
+        // a sparse 16×16 grid to get a reliable luma estimate in O(1) time.
+        crate::frame::PixelFormat::Mjpeg => {
+            use image::ImageFormat;
+            match image::load_from_memory_with_format(&frame.data, ImageFormat::Jpeg) {
+                Err(_) => 0,
+                Ok(img) => {
+                    let rgb = img.into_rgb8();
+                    let (w, h) = rgb.dimensions();
+                    if w == 0 || h == 0 {
+                        return 0;
+                    }
+                    // Sample a 16×16 grid evenly distributed across the image.
+                    let samples = 16u32;
+                    let step_x = (w / samples).max(1);
+                    let step_y = (h / samples).max(1);
+                    let mut sum: u64 = 0;
+                    let mut count: u64 = 0;
+                    let mut y = 0u32;
+                    while y < h {
+                        let mut x = 0u32;
+                        while x < w {
+                            let p = rgb.get_pixel(x, y).0;
+                            let luma =
+                                (299 * p[0] as u32 + 587 * p[1] as u32 + 114 * p[2] as u32) / 1000;
+                            sum += luma as u64;
+                            count += 1;
+                            x += step_x;
+                        }
+                        y += step_y;
+                    }
+                    (sum.saturating_div(count).min(255)) as u8
+                }
+            }
+        }
+    }
 }
 
 /// Try to negotiate a pixel format with the V4L2 driver.
@@ -467,7 +507,9 @@ mod tests {
         let device = CameraDevice::best_available().expect("need a camera to run this test");
         let mut cap = CameraCapture::open(device).expect("open failed");
         for i in 0..5 {
-            let frame = cap.capture_frame().unwrap_or_else(|e| panic!("frame {i} failed: {e}"));
+            let frame = cap
+                .capture_frame()
+                .unwrap_or_else(|e| panic!("frame {i} failed: {e}"));
             assert!(!frame.data.is_empty(), "frame {i} data must not be empty");
         }
     }
