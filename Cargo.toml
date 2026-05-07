@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dax-core",
+    "crates/dax-capture",
+    "crates/dax-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+authors = ["Dax <dax@dax-ec.ru>"]
+repository = "https://github.com/daxrpm/dax-auth"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[workspace.dependencies]
+# Internal crates
+dax-core = { path = "crates/dax-core" }
+dax-capture = { path = "crates/dax-capture" }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Camera capture (V4L2 backend on Linux)
+nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
