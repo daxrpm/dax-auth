@@ -36,6 +36,22 @@ enum Command {
         #[arg(short, long)]
         out: PathBuf,
     },
+
+    /// Run face detection on an image file.
+    Detect {
+        /// Path to the SCRFD ONNX model (e.g. `models/buffalo_s/det_500m.onnx`).
+        #[arg(short, long)]
+        model: PathBuf,
+
+        /// Input image file (JPEG/PNG).
+        #[arg(short, long, alias = "in")]
+        input: PathBuf,
+
+        /// Optional path to save an annotated copy with bounding boxes
+        /// and landmarks drawn on top.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -45,6 +61,9 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Devices => commands::devices::run(),
         Command::Snap { device, out } => commands::snap::run(device, &out),
+        Command::Detect { model, input, out } => {
+            commands::detect::run(&model, &input, out.as_deref())
+        }
     }
 }
 
@@ -56,7 +75,7 @@ fn init_tracing(verbosity: u8) {
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "daxauth={default_level},dax_capture={default_level}"
+            "daxauth={default_level},dax_capture={default_level},dax_detect={default_level}"
         ))
     });
 

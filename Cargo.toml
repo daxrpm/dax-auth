@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/dax-core",
     "crates/dax-capture",
+    "crates/dax-detect",
     "crates/dax-cli",
 ]
 
@@ -30,6 +31,7 @@ missing_panics_doc = "allow"
 # Internal crates
 dax-core = { path = "crates/dax-core" }
 dax-capture = { path = "crates/dax-capture" }
+dax-detect = { path = "crates/dax-detect" }
 
 # Errors
 thiserror = "2"
@@ -47,6 +49,11 @@ nokhwa = { version = "0.10", default-features = false, features = ["input-native
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+imageproc = { version = "0.25", default-features = false }
+
+# ONNX Runtime
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
+ndarray = "0.17"
 
 [profile.release]
 opt-level = 3

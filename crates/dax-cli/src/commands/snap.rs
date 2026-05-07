@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use dax_capture::{Camera, PixelFormat};
 use image::{ImageBuffer, Rgb};
 use tracing::info;

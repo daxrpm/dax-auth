@@ -25,9 +25,8 @@ impl Camera {
     /// Open the camera at `index`, negotiating the highest resolution
     /// the device exposes in an RGB pixel layout.
     pub fn open(index: u32) -> CaptureResult<Self> {
-        let format = RequestedFormat::new::<RgbFormat>(
-            RequestedFormatType::AbsoluteHighestResolution,
-        );
+        let format =
+            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
         let camera = nokhwa::Camera::new(CameraIndex::Index(index), format)
             .map_err(|e| CaptureError::DeviceOpen(e.to_string()))?;
         debug!(index, "camera opened");
@@ -57,8 +56,7 @@ impl Camera {
         let bytes = decoded.into_raw();
         debug!(width, height, len = bytes.len(), "frame captured");
 
-        Frame::from_packed(bytes, width, height, PixelFormat::Rgb8).ok_or_else(|| {
-            CaptureError::Decode(String::from("decoded buffer size mismatch"))
-        })
+        Frame::from_packed(bytes, width, height, PixelFormat::Rgb8)
+            .ok_or_else(|| CaptureError::Decode(String::from("decoded buffer size mismatch")))
     }
 }
