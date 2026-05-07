@@ -43,7 +43,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 clap = { version = "4", features = ["derive"] }
 
 # Camera capture (V4L2 backend on Linux)
-nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
+nokhwa = { version = "0.10", default-features = false, features = ["input-native", "decoding"] }
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

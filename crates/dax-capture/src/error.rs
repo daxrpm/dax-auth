@@ -12,4 +12,13 @@ pub enum CaptureError {
 
     #[error("device {0} not found")]
     DeviceNotFound(String),
+
+    #[error("failed to open camera device: {0}")]
+    DeviceOpen(String),
+
+    #[error("camera stream error: {0}")]
+    Stream(String),
+
+    #[error("failed to decode captured frame: {0}")]
+    Decode(String),
 }

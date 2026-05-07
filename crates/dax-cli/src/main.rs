@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -23,6 +25,17 @@ struct Cli {
 enum Command {
     /// List the camera devices visible to the operating system.
     Devices,
+
+    /// Capture a single frame from a camera and save it to disk.
+    Snap {
+        /// Camera index as reported by `daxauth devices`.
+        #[arg(short, long, default_value_t = 0)]
+        device: u32,
+
+        /// Output path. Format is inferred from the extension.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -31,6 +44,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Devices => commands::devices::run(),
+        Command::Snap { device, out } => commands::snap::run(device, &out),
     }
 }
 
