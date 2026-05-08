@@ -106,6 +106,34 @@ enum Command {
         #[arg(short, long, alias = "in")]
         input: PathBuf,
     },
+
+    /// Encrypted vault management.
+    #[command(subcommand)]
+    Vault(VaultCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum VaultCommand {
+    /// Create an empty encrypted vault at the given path.
+    Init {
+        /// Path of the vault file to create.
+        #[arg(long)]
+        vault: PathBuf,
+    },
+    /// List enrolled users and their template counts.
+    List {
+        /// Path to the vault file.
+        #[arg(long)]
+        vault: PathBuf,
+    },
+    /// Remove all templates for a user.
+    Remove {
+        #[arg(long)]
+        vault: PathBuf,
+
+        #[arg(short, long)]
+        user: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -136,6 +164,11 @@ fn main() -> Result<()> {
             liveness_model,
             input,
         } => commands::liveness::run(&detector, &liveness_model, &input),
+        Command::Vault(vault_cmd) => match vault_cmd {
+            VaultCommand::Init { vault } => commands::vault::init(&vault),
+            VaultCommand::List { vault } => commands::vault::list(&vault),
+            VaultCommand::Remove { vault, user } => commands::vault::remove(&vault, &user),
+        },
     }
 }
 

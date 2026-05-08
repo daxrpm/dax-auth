@@ -5,3 +5,4 @@ pub mod embed;
 pub mod liveness;
 pub mod snap;
 pub mod snap_ir;
+pub mod vault;

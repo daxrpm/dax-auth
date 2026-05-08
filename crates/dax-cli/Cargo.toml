@@ -20,6 +20,7 @@ dax-capture.workspace = true
 dax-detect.workspace = true
 dax-embed.workspace = true
 dax-liveness.workspace = true
+dax-store.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 image.workspace = true

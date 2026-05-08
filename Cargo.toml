@@ -6,6 +6,7 @@ members = [
     "crates/dax-detect",
     "crates/dax-embed",
     "crates/dax-liveness",
+    "crates/dax-store",
     "crates/dax-cli",
 ]
 
@@ -36,6 +37,7 @@ dax-capture = { path = "crates/dax-capture" }
 dax-detect = { path = "crates/dax-detect" }
 dax-embed = { path = "crates/dax-embed" }
 dax-liveness = { path = "crates/dax-liveness" }
+dax-store = { path = "crates/dax-store" }
 
 # Errors
 thiserror = "2"
@@ -64,6 +66,16 @@ ndarray = "0.17"
 
 # Linear algebra (SVD for Umeyama similarity transform)
 nalgebra = { version = "0.34", default-features = false, features = ["std"] }
+
+# Cryptography (RustCrypto)
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand = "0.9"
+zeroize = { version = "1", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 opt-level = 3
