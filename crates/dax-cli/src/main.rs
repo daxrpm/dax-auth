@@ -107,6 +107,55 @@ enum Command {
         input: PathBuf,
     },
 
+    /// Capture multiple frames and store the user's templates in the vault.
+    Enroll {
+        /// Username to enrol.
+        #[arg(short, long)]
+        user: String,
+
+        /// Path to the vault file. Created if missing.
+        #[arg(long)]
+        vault: PathBuf,
+
+        /// Number of valid captures required to complete enrolment.
+        #[arg(short = 'n', long, default_value_t = 5)]
+        captures: usize,
+
+        /// Camera index for RGB capture.
+        #[arg(short, long, default_value_t = 0)]
+        device: u32,
+
+        #[arg(long, alias = "det")]
+        detector: PathBuf,
+
+        #[arg(long, alias = "rec")]
+        recognizer: PathBuf,
+
+        #[arg(long, alias = "live")]
+        liveness_model: PathBuf,
+    },
+
+    /// Verify a single capture against the templates stored for the user.
+    Verify {
+        #[arg(short, long)]
+        user: String,
+
+        #[arg(long)]
+        vault: PathBuf,
+
+        #[arg(short, long, default_value_t = 0)]
+        device: u32,
+
+        #[arg(long, alias = "det")]
+        detector: PathBuf,
+
+        #[arg(long, alias = "rec")]
+        recognizer: PathBuf,
+
+        #[arg(long, alias = "live")]
+        liveness_model: PathBuf,
+    },
+
     /// Encrypted vault management.
     #[command(subcommand)]
     Vault(VaultCommand),
@@ -164,6 +213,38 @@ fn main() -> Result<()> {
             liveness_model,
             input,
         } => commands::liveness::run(&detector, &liveness_model, &input),
+        Command::Enroll {
+            user,
+            vault,
+            captures,
+            device,
+            detector,
+            recognizer,
+            liveness_model,
+        } => commands::enroll::run(
+            &user,
+            &vault,
+            captures,
+            device,
+            &detector,
+            &recognizer,
+            &liveness_model,
+        ),
+        Command::Verify {
+            user,
+            vault,
+            device,
+            detector,
+            recognizer,
+            liveness_model,
+        } => commands::verify::run(
+            &user,
+            &vault,
+            device,
+            &detector,
+            &recognizer,
+            &liveness_model,
+        ),
         Command::Vault(vault_cmd) => match vault_cmd {
             VaultCommand::Init { vault } => commands::vault::init(&vault),
             VaultCommand::List { vault } => commands::vault::list(&vault),

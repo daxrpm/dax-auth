@@ -53,9 +53,11 @@ impl Camera {
 
     /// Capture a single frame, decoded into packed 8-bit RGB.
     pub fn capture(&mut self) -> CaptureResult<Frame> {
-        self.inner
-            .open_stream()
-            .map_err(|e| CaptureError::Stream(e.to_string()))?;
+        if !self.inner.is_stream_open() {
+            self.inner
+                .open_stream()
+                .map_err(|e| CaptureError::Stream(e.to_string()))?;
+        }
         let buffer = self
             .inner
             .frame()
