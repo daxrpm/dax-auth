@@ -94,6 +94,18 @@ enum Command {
         #[arg(short, long)]
         b: PathBuf,
     },
+
+    /// Run passive liveness check on the first face in an image.
+    Liveness {
+        #[arg(short, long, alias = "det")]
+        detector: PathBuf,
+
+        #[arg(short, long, alias = "live")]
+        liveness_model: PathBuf,
+
+        #[arg(short, long, alias = "in")]
+        input: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -119,6 +131,11 @@ fn main() -> Result<()> {
             a,
             b,
         } => commands::compare::run(&detector, &recognizer, &a, &b),
+        Command::Liveness {
+            detector,
+            liveness_model,
+            input,
+        } => commands::liveness::run(&detector, &liveness_model, &input),
     }
 }
 

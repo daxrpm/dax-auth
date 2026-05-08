@@ -414,6 +414,7 @@ dependencies = [
  "dax-capture",
  "dax-detect",
  "dax-embed",
+ "dax-liveness",
  "image",
  "imageproc",
  "tracing",
@@ -448,6 +449,19 @@ dependencies = [
  "image",
  "imageproc",
  "nalgebra 0.34.2",
+ "ndarray",
+ "ort",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "dax-liveness"
+version = "0.1.0"
+dependencies = [
+ "dax-capture",
+ "dax-detect",
+ "image",
  "ndarray",
  "ort",
  "thiserror",

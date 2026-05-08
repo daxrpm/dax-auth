@@ -5,6 +5,7 @@ members = [
     "crates/dax-capture",
     "crates/dax-detect",
     "crates/dax-embed",
+    "crates/dax-liveness",
     "crates/dax-cli",
 ]
 
@@ -34,6 +35,7 @@ dax-core = { path = "crates/dax-core" }
 dax-capture = { path = "crates/dax-capture" }
 dax-detect = { path = "crates/dax-detect" }
 dax-embed = { path = "crates/dax-embed" }
+dax-liveness = { path = "crates/dax-liveness" }
 
 # Errors
 thiserror = "2"

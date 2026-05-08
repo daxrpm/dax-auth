@@ -2,5 +2,6 @@ pub mod compare;
 pub mod detect;
 pub mod devices;
 pub mod embed;
+pub mod liveness;
 pub mod snap;
 pub mod snap_ir;
