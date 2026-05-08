@@ -46,8 +46,11 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Camera capture (V4L2 backend on Linux)
+# Camera capture
 nokhwa = { version = "0.10", default-features = false, features = ["input-native", "decoding"] }
+# Direct V4L2 access for IR sensors (nokhwa fails to negotiate GREY format with
+# Windows-Hello-class IR cameras as of 0.10.10).
+v4l = "0.14"
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

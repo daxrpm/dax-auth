@@ -4,6 +4,7 @@ use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
 use tracing::debug;
 
 use crate::error::{CaptureError, CaptureResult};
+use crate::ir::IrCamera;
 
 /// A single camera device opened for capture.
 ///
@@ -27,35 +28,45 @@ impl Camera {
     pub fn open(index: u32) -> CaptureResult<Self> {
         let format =
             RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+        Self::open_with(index, format, "rgb")
+    }
+
+    fn open_with(
+        index: u32,
+        format: RequestedFormat<'_>,
+        kind: &'static str,
+    ) -> CaptureResult<Self> {
         let camera = nokhwa::Camera::new(CameraIndex::Index(index), format)
             .map_err(|e| CaptureError::DeviceOpen(e.to_string()))?;
-        debug!(index, "camera opened");
+        debug!(index, kind, "camera opened");
         Ok(Self { inner: camera })
     }
 
-    /// Capture a single frame, decoded into packed 8-bit RGB.
+    /// Open an IR camera at `index`.
     ///
-    /// The first call lazily opens the V4L2 stream; subsequent calls
-    /// reuse it.
+    /// Uses a direct V4L2 path because `nokhwa 0.10` cannot negotiate
+    /// the `GREY` `FourCC` that Windows-Hello-class infrared sensors
+    /// expose; the dedicated [`IrCamera`] is therefore returned.
+    pub fn open_ir(index: u32) -> CaptureResult<IrCamera> {
+        IrCamera::open(index)
+    }
+
+    /// Capture a single frame, decoded into packed 8-bit RGB.
     pub fn capture(&mut self) -> CaptureResult<Frame> {
         self.inner
             .open_stream()
             .map_err(|e| CaptureError::Stream(e.to_string()))?;
-
         let buffer = self
             .inner
             .frame()
             .map_err(|e| CaptureError::Stream(e.to_string()))?;
-
         let decoded = buffer
             .decode_image::<RgbFormat>()
             .map_err(|e| CaptureError::Decode(e.to_string()))?;
-
         let width = decoded.width();
         let height = decoded.height();
         let bytes = decoded.into_raw();
-        debug!(width, height, len = bytes.len(), "frame captured");
-
+        debug!(width, height, len = bytes.len(), "rgb frame captured");
         Frame::from_packed(bytes, width, height, PixelFormat::Rgb8)
             .ok_or_else(|| CaptureError::Decode(String::from("decoded buffer size mismatch")))
     }

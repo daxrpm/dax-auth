@@ -9,10 +9,14 @@
 mod camera;
 mod enumerator;
 mod error;
+#[cfg(target_os = "linux")]
+mod ir;
 
 pub use camera::Camera;
 pub use enumerator::{DeviceInfo, Enumerator};
 pub use error::{CaptureError, CaptureResult};
+#[cfg(target_os = "linux")]
+pub use ir::IrCamera;
 
 // Re-export the cross-crate frame type so consumers do not need to
 // depend on `dax-core` directly.

@@ -16,3 +16,6 @@ dax-core.workspace = true
 nokhwa.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l.workspace = true

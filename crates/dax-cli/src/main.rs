@@ -37,6 +37,17 @@ enum Command {
         out: PathBuf,
     },
 
+    /// Capture a single grayscale frame from an IR camera.
+    SnapIr {
+        /// Camera index as reported by `daxauth devices`.
+        #[arg(short, long, default_value_t = 2)]
+        device: u32,
+
+        /// Output path. PNG is recommended for grayscale.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+
     /// Run face detection on an image file.
     Detect {
         /// Path to the SCRFD ONNX model (e.g. `models/buffalo_s/det_500m.onnx`).
@@ -92,6 +103,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Devices => commands::devices::run(),
         Command::Snap { device, out } => commands::snap::run(device, &out),
+        Command::SnapIr { device, out } => commands::snap_ir::run(device, &out),
         Command::Detect { model, input, out } => {
             commands::detect::run(&model, &input, out.as_deref())
         }
