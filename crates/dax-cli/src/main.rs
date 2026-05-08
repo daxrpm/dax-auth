@@ -52,6 +52,37 @@ enum Command {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+
+    /// Compute the embedding for the first face detected in an image.
+    Embed {
+        #[arg(short, long, alias = "det")]
+        detector: PathBuf,
+
+        #[arg(short, long, alias = "rec")]
+        recognizer: PathBuf,
+
+        #[arg(short, long, alias = "in")]
+        input: PathBuf,
+
+        /// Optional: save the 112×112 aligned face for visual debugging.
+        #[arg(long)]
+        aligned_out: Option<PathBuf>,
+    },
+
+    /// Compare the faces in two images and report cosine similarity.
+    Compare {
+        #[arg(short, long, alias = "det")]
+        detector: PathBuf,
+
+        #[arg(short, long, alias = "rec")]
+        recognizer: PathBuf,
+
+        #[arg(short, long)]
+        a: PathBuf,
+
+        #[arg(short, long)]
+        b: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -64,6 +95,18 @@ fn main() -> Result<()> {
         Command::Detect { model, input, out } => {
             commands::detect::run(&model, &input, out.as_deref())
         }
+        Command::Embed {
+            detector,
+            recognizer,
+            input,
+            aligned_out,
+        } => commands::embed::run(&detector, &recognizer, &input, aligned_out.as_deref()),
+        Command::Compare {
+            detector,
+            recognizer,
+            a,
+            b,
+        } => commands::compare::run(&detector, &recognizer, &a, &b),
     }
 }
 
@@ -75,7 +118,7 @@ fn init_tracing(verbosity: u8) {
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "daxauth={default_level},dax_capture={default_level},dax_detect={default_level}"
+            "daxauth={default_level},dax_capture={default_level},dax_detect={default_level},dax_embed={default_level}"
         ))
     });
 
