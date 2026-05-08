@@ -26,8 +26,8 @@ pub fn run(detector_path: &Path, liveness_path: &Path, input: &Path) -> Result<(
     println!("Verdict      : {icon}");
     println!("Score        : {:.4}", report.score());
     println!(
-        "Probabilities: real={:.4} fake={:.4}",
-        report.real_prob, report.fake_prob
+        "Probabilities: real={:.4} spoof={:.4}",
+        report.real_prob, report.spoof_prob
     );
     println!("Detection    : score={:.3}", face.score);
     Ok(())

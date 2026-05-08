@@ -9,7 +9,7 @@ use dax_detect::Bbox;
 use ndarray::Array4;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::crop::crop_face_to_bgr;
 use crate::error::{LivenessError, LivenessResult};
@@ -19,6 +19,10 @@ use crate::error::{LivenessError, LivenessResult};
 const DEFAULT_SCALE: f32 = 2.7;
 
 /// Index of the "real" class in the model's output logits.
+///
+/// Silent-Face `MiniFASNet` is a 3-class classifier (print spoof /
+/// real / replay spoof). Class 1 is the live one; everything else
+/// collapses into a single "spoof" probability for downstream code.
 const REAL_CLASS_INDEX: usize = 1;
 
 /// Verdict returned by the liveness model.
@@ -40,7 +44,7 @@ impl LivenessVerdict {
 pub struct LivenessReport {
     pub verdict: LivenessVerdict,
     pub real_prob: f32,
-    pub fake_prob: f32,
+    pub spoof_prob: f32,
 }
 
 impl LivenessReport {
@@ -49,7 +53,7 @@ impl LivenessReport {
     pub fn score(&self) -> f32 {
         match self.verdict {
             LivenessVerdict::Real => self.real_prob,
-            LivenessVerdict::Fake => self.fake_prob,
+            LivenessVerdict::Fake => self.spoof_prob,
         }
     }
 }
@@ -114,7 +118,9 @@ impl LivenessChecker {
         let view = value
             .try_extract_array::<f32>()
             .map_err(|e| LivenessError::Postprocess(e.to_string()))?;
+        let output_shape = view.shape().to_vec();
         let logits: Vec<f32> = view.iter().copied().collect();
+        trace!(?output_shape, ?logits, "raw model output");
         if logits.len() < 2 {
             return Err(LivenessError::Postprocess(format!(
                 "expected ≥2 logits, got {}",
@@ -123,19 +129,26 @@ impl LivenessChecker {
         }
 
         let probs = softmax(&logits);
-        let fake_prob = probs[1 - REAL_CLASS_INDEX];
-        let real_prob = probs[REAL_CLASS_INDEX];
-        let verdict = if real_prob >= fake_prob {
+        trace!(?probs, "post-softmax");
+
+        let real_prob = probs.get(REAL_CLASS_INDEX).copied().unwrap_or(0.0);
+        let spoof_prob: f32 = probs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != REAL_CLASS_INDEX)
+            .map(|(_, p)| *p)
+            .sum();
+        let verdict = if real_prob > spoof_prob {
             LivenessVerdict::Real
         } else {
             LivenessVerdict::Fake
         };
-        debug!(real_prob, fake_prob, ?verdict, "liveness inference");
+        debug!(real_prob, spoof_prob, ?verdict, "liveness inference");
 
         Ok(LivenessReport {
             verdict,
             real_prob,
-            fake_prob,
+            spoof_prob,
         })
     }
 }

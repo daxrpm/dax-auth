@@ -147,7 +147,7 @@ fn init_tracing(verbosity: u8) {
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "daxauth={default_level},dax_capture={default_level},dax_detect={default_level},dax_embed={default_level}"
+            "daxauth={default_level},dax_capture={default_level},dax_detect={default_level},dax_embed={default_level},dax_liveness={default_level}"
         ))
     });
 
