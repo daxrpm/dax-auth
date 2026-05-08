@@ -1,16 +1,12 @@
 [package]
-name = "dax-cli"
-description = "Command-line interface for dax-auth."
+name = "dax-runtime"
+description = "Reusable face authentication pipeline shared between CLI and PAM."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-
-[[bin]]
-name = "daxauth"
-path = "src/main.rs"
 
 [lints]
 workspace = true
@@ -20,11 +16,6 @@ dax-capture.workspace = true
 dax-detect.workspace = true
 dax-embed.workspace = true
 dax-liveness.workspace = true
-dax-runtime.workspace = true
 dax-store.workspace = true
-anyhow.workspace = true
-clap.workspace = true
-image.workspace = true
-imageproc.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true

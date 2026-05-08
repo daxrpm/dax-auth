@@ -7,6 +7,8 @@ members = [
     "crates/dax-embed",
     "crates/dax-liveness",
     "crates/dax-store",
+    "crates/dax-runtime",
+    "crates/dax-pam",
     "crates/dax-cli",
 ]
 
@@ -38,6 +40,7 @@ dax-detect = { path = "crates/dax-detect" }
 dax-embed = { path = "crates/dax-embed" }
 dax-liveness = { path = "crates/dax-liveness" }
 dax-store = { path = "crates/dax-store" }
+dax-runtime = { path = "crates/dax-runtime" }
 
 # Errors
 thiserror = "2"
@@ -76,6 +79,9 @@ zeroize = { version = "1", features = ["derive"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# PAM bindings (Linux only)
+pam-bindings = "0.1"
 
 [profile.release]
 opt-level = 3

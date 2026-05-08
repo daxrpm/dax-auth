@@ -516,6 +516,7 @@ dependencies = [
  "dax-detect",
  "dax-embed",
  "dax-liveness",
+ "dax-runtime",
  "dax-store",
  "image",
  "imageproc",
@@ -566,6 +567,29 @@ dependencies = [
  "image",
  "ndarray",
  "ort",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "dax-pam"
+version = "0.1.0"
+dependencies = [
+ "dax-runtime",
+ "pam-bindings",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dax-runtime"
+version = "0.1.0"
+dependencies = [
+ "dax-capture",
+ "dax-detect",
+ "dax-embed",
+ "dax-liveness",
+ "dax-store",
  "thiserror",
  "tracing",
 ]
@@ -1439,6 +1463,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "pam-bindings"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95c337e922acb6ab9c3ddd1016fed13957a5bf14f51b6caa293ddc8dd47660ca"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

@@ -1,0 +1,12 @@
+//! End-to-end face authentication pipeline.
+//!
+//! Both the CLI's `verify` subcommand and the PAM module call into
+//! [`verify_face`]. Keeping the pipeline in a dedicated crate avoids
+//! drift between the two entry points and lets the heavyweight model
+//! initialisation be unit-tested independently.
+
+mod error;
+mod verify;
+
+pub use error::{RuntimeError, RuntimeResult};
+pub use verify::{verify_face, VerifyConfig, VerifyOutcome, VerifyReason, DEFAULT_MATCH_THRESHOLD};
