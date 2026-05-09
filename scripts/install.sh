@@ -172,25 +172,69 @@ detect_distro() {
 detect_hardware() {
     HW_RGB_DEVICES=()
     HW_IR_DEVICES=()
+    HW_NON_CAPTURE=()
     if ! command -v v4l2-ctl >/dev/null 2>&1; then
         warn "v4l2-ctl not available; skipping hardware detection."
-        warn "Install v4l-utils for the installer to probe your cameras."
+        warn "Install v4l-utils to let the installer probe your cameras."
         return 0
     fi
-    local node desc
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^/dev/video ]]; then
-            node="$line"
-            desc="$(v4l2-ctl --device="$node" --info 2>/dev/null | awk -F': ' '/Card type/ {print $2; exit}')"
-            if v4l2-ctl --device="$node" --list-formats-ext 2>/dev/null | grep -q "Type: Video Capture"; then
-                if echo "$desc" | grep -qi "ir"; then
-                    HW_IR_DEVICES+=("$node|$desc")
-                else
-                    HW_RGB_DEVICES+=("$node|$desc")
-                fi
+
+    local node desc formats fourccs is_ir has_color has_grey
+    for node in /dev/video*; do
+        [[ -c "$node" ]] || continue
+
+        # Skip nodes that are not Video Capture (metadata / output).
+        if ! v4l2-ctl --device="$node" --list-formats 2>/dev/null | grep -q "Type: Video Capture"; then
+            HW_NON_CAPTURE+=("$node")
+            continue
+        fi
+
+        # `awk -F': '` truncates "ASUS FHD webcam: ASUS IR camera" at the
+        # first colon; sed keeps everything after `Card type :`.
+        desc="$(v4l2-ctl --device="$node" --info 2>/dev/null \
+            | sed -n 's/^[[:space:]]*Card type[[:space:]]*:[[:space:]]*//p' | head -n1)"
+        desc="${desc:-unknown}"
+
+        # FourCCs the device exposes (e.g. GREY, YUYV, MJPG).
+        fourccs="$(v4l2-ctl --device="$node" --list-formats 2>/dev/null \
+            | awk -F"'" '/\[[0-9]+\]:/ {print $2}' | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
+        if [[ -z "$fourccs" ]]; then
+            # Companion / metadata node: keep it visible so the user
+            # understands why the index is "skipped".
+            if grep -qiE '\b(ir|infrared)\b' <<<"$desc"; then
+                HW_NON_CAPTURE+=("$node ($desc, no streamable formats)")
+            else
+                HW_NON_CAPTURE+=("$node ($desc, no streamable formats)")
+            fi
+            continue
+        fi
+        formats="$(echo "$fourccs" | tr ' ' ',')"
+
+        # Heuristics, in priority order:
+        #   1. Description mentions "IR" / "infrared".
+        #   2. Only grayscale formats exposed (typical of Hello-class IR sensors).
+        is_ir=0
+        if grep -qiE '\b(ir|infrared)\b' <<<"$desc"; then
+            is_ir=1
+        else
+            has_color=0; has_grey=0
+            for fcc in $fourccs; do
+                case "$fcc" in
+                    GREY|Y8|Y16|Y10) has_grey=1 ;;
+                    YUYV|MJPG|NV12|RGB*|BGR*|UYVY|YV12|YU12|H264) has_color=1 ;;
+                esac
+            done
+            if (( has_grey == 1 && has_color == 0 )); then
+                is_ir=1
             fi
         fi
-    done < <(v4l2-ctl --list-devices 2>/dev/null | awk '/\/dev\/video[0-9]+/ {print $1}')
+
+        if (( is_ir == 1 )); then
+            HW_IR_DEVICES+=("$node|$desc|$formats")
+        else
+            HW_RGB_DEVICES+=("$node|$desc|$formats")
+        fi
+    done
 }
 
 print_banner() {
@@ -210,17 +254,31 @@ print_environment() {
     note "Package manager : ${PKG_MGR:-?}"
     note "PAM directory   : $SECURITY_DIR"
     if (( ${#HW_RGB_DEVICES[@]} > 0 )); then
-        ok "RGB cameras detected (${#HW_RGB_DEVICES[@]}):"
-        for d in "${HW_RGB_DEVICES[@]}"; do note "  - ${d//|/  ·  }"; done
+        ok "RGB cameras (${#HW_RGB_DEVICES[@]}):"
+        local IFS='|'; local node desc fmt
+        for d in "${HW_RGB_DEVICES[@]}"; do
+            read -r node desc fmt <<<"$d"
+            note "  $node  ·  $desc  ·  formats=$fmt"
+        done
+        unset IFS
     else
         warn "No RGB camera detected. The pipeline will not work without one."
     fi
     if (( ${#HW_IR_DEVICES[@]} > 0 )); then
-        ok "IR cameras detected (${#HW_IR_DEVICES[@]}):"
-        for d in "${HW_IR_DEVICES[@]}"; do note "  - ${d//|/  ·  }"; done
-        note "The pipeline runs RGB-only today; IR is captured for future cross-check."
+        ok "IR cameras (${#HW_IR_DEVICES[@]}):"
+        local IFS='|'; local node desc fmt
+        for d in "${HW_IR_DEVICES[@]}"; do
+            read -r node desc fmt <<<"$d"
+            note "  $node  ·  $desc  ·  formats=$fmt"
+        done
+        unset IFS
+        note "The pipeline runs RGB-only today; IR is recorded in config for future cross-check."
     else
-        note "No IR sensor — that's fine, the pipeline runs RGB-only."
+        note "No IR sensor detected — the pipeline runs RGB-only, that's fine."
+    fi
+    if (( ${#HW_NON_CAPTURE[@]} > 0 )); then
+        note "Non-capture / companion nodes (skipped):"
+        for n in "${HW_NON_CAPTURE[@]}"; do note "  $n"; done
     fi
 }
 
@@ -284,7 +342,7 @@ ensure_models() {
 
 # ─────────────────────────── install / config ────────────────────────────
 generate_config() {
-    local rgb_dev=0 ir_line="# ir_device = 2     # uncomment to capture IR for future cross-check"
+    local rgb_dev=0 ir_line="# ir_device = 2   # no IR sensor was detected; uncomment when you add one"
     if (( ${#HW_RGB_DEVICES[@]} > 0 )); then
         rgb_dev="$(echo "${HW_RGB_DEVICES[0]}" | awk -F'|' '{print $1}' | sed 's|/dev/video||')"
     fi
