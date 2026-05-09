@@ -35,6 +35,12 @@ camera ─▶ SCRFD detection ─▶ MiniFASNet liveness ─▶ Umeyama align �
 - A V4L2 webcam. An IR sensor is optional but recommended for the strongest spoof resistance.
 - For PAM testing: the `pamtester` package (`sudo dnf install pamtester` on Fedora).
 
+## How to use this repo
+
+- Want to **try it out fast**? Follow the **Quick start** below.
+- Want to **validate every layer** end-to-end? Read [`TESTING.md`](TESTING.md). It walks tier-by-tier from "is the camera reachable" up to "PAM authenticates a real face and rejects a phone replay".
+- Want to **install it system-wide**? Run the interactive installer at `scripts/install.sh`. It detects your distribution, asks before doing anything, and never touches `/etc/pam.d/sudo` on its own.
+
 ## Quick start
 
 ### 1. Clone and fetch models
@@ -133,6 +139,14 @@ pamtester: invoking pam_start(daxauth-test, $USER, ...)
 pamtester: performing operation - authenticate
 pamtester: successfully authenticated
 ```
+
+### 7. Install system-wide (optional)
+
+```sh
+./scripts/install.sh
+```
+
+The interactive installer detects Fedora / Debian / Arch family, builds the release artefacts if missing, copies the binary to `/usr/local/bin/`, the PAM module to the distribution's PAM security directory, and the models to `/usr/share/daxauth/`. It prints the exact `auth sufficient …` line you should add to `/etc/pam.d/sudo` (or any other service) **only after you have a recovery shell open and the `pamtest.sh` smoke test is green**. Run it again to **verify** an existing install or **uninstall**.
 
 ## Subcommand reference
 
