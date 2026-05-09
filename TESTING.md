@@ -121,7 +121,7 @@ cargo run -p dax-cli --quiet -- embed \
     --recognizer models/buffalo_s/w600k_mbf.onnx \
     --input /tmp/test-rgb.jpg \
     --aligned-out /tmp/test-aligned.png
-convert /tmp/test-aligned.png -resize 448x448 /tmp/test-aligned-4x.png
+magick /tmp/test-aligned.png -resize 448x448 /tmp/test-aligned-4x.png
 xdg-open /tmp/test-aligned-4x.png
 ```
 

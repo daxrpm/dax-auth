@@ -18,22 +18,7 @@ models/
 # Local biometric data must never leak into VCS.
 *.template
 *.vault
-*.pickle
-
-# --- Python (legacy / src/) ---
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.o
-.venv/
-venv/
-env/
-.env
 
 # --- Test / coverage outputs ---
 *.log
 *.tmp
-/tmp/
-htmlcov/
-.coverage
