@@ -27,4 +27,7 @@ pub enum RuntimeError {
 
     #[error("no face detected in capture")]
     NoFace,
+
+    #[error("config: {0}")]
+    Config(String),
 }

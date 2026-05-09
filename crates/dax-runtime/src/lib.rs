@@ -5,8 +5,10 @@
 //! drift between the two entry points and lets the heavyweight model
 //! initialisation be unit-tested independently.
 
+mod config;
 mod error;
 mod verify;
 
+pub use config::{CameraConfig, Config, PathsConfig, SecurityConfig, SYSTEM_CONFIG_PATH};
 pub use error::{RuntimeError, RuntimeResult};
 pub use verify::{verify_face, VerifyConfig, VerifyOutcome, VerifyReason, DEFAULT_MATCH_THRESHOLD};

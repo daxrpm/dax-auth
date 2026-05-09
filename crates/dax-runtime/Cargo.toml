@@ -17,5 +17,7 @@ dax-detect.workspace = true
 dax-embed.workspace = true
 dax-liveness.workspace = true
 dax-store.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 tracing.workspace = true
