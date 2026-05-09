@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use dax_store::Vault;
 
-use crate::resolve::{resolve, Overrides};
+use crate::resolve::{ensure_writable, resolve, Overrides};
 
 pub fn init(vault_path: Option<&Path>) -> Result<()> {
     let cfg = resolve(Overrides {
@@ -13,6 +13,7 @@ pub fn init(vault_path: Option<&Path>) -> Result<()> {
     if cfg.vault.exists() {
         bail!("vault already exists at {}", cfg.vault.display());
     }
+    ensure_writable(&cfg.vault).context("vault path is not writable")?;
     let vault = Vault::new();
     vault
         .save(&cfg.vault, cfg.passphrase.as_bytes())
@@ -49,6 +50,7 @@ pub fn remove(vault_path: Option<&Path>, user: &str) -> Result<()> {
         vault: vault_path,
         ..Overrides::default()
     })?;
+    ensure_writable(&cfg.vault).context("vault path is not writable")?;
     let mut vault = Vault::open(&cfg.vault, cfg.passphrase.as_bytes())
         .with_context(|| format!("opening vault {}", cfg.vault.display()))?;
     if !vault.remove_user(user) {

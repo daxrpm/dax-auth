@@ -102,6 +102,34 @@ fn missing(what: &str, flag: &str) -> String {
     )
 }
 
+/// Verify the calling process can create / overwrite a file at
+/// `path`. Catches the common "ran without sudo" failure mode in
+/// milliseconds, before we spend seconds loading ONNX models.
+pub fn ensure_writable(path: &Path) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.exists() {
+        anyhow::bail!(
+            "vault directory does not exist: {}\n  Run sudo ./scripts/install.sh first.",
+            parent.display()
+        );
+    }
+    let probe = parent.join(format!(".dax-auth-probe.{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(anyhow::anyhow!(
+            "no write permission on {} — re-run with `sudo` (or pass --vault to a path you can write).",
+            parent.display()
+        )),
+        Err(e) => Err(anyhow::anyhow!(
+            "write probe on {} failed: {e}",
+            parent.display()
+        )),
+    }
+}
+
 /// Pick the user this command should target.
 ///
 /// Heuristic: when invoked under `sudo` we want the human user, not

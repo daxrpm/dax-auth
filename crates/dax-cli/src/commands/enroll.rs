@@ -10,7 +10,7 @@ use dax_liveness::{LivenessChecker, LivenessVerdict};
 use dax_store::Vault;
 use tracing::info;
 
-use crate::resolve::{default_user, resolve, Overrides};
+use crate::resolve::{default_user, ensure_writable, resolve, Overrides};
 
 const PAUSE_BETWEEN_CAPTURES: Duration = Duration::from_millis(800);
 const MAX_RETRIES_PER_CAPTURE: usize = 5;
@@ -43,6 +43,10 @@ pub fn run(args: Args) -> Result<()> {
         liveness: args.liveness_model.as_deref(),
         camera_index: args.device,
     })?;
+
+    // Fail fast if we will not be able to save the vault, instead of
+    // after the user has stared at the camera for 5 captures.
+    ensure_writable(&cfg.vault).context("vault path is not writable")?;
 
     let mut detector = Detector::from_file(&cfg.detector).context("loading detector")?;
     let mut embedder = Embedder::from_file(&cfg.recognizer).context("loading recognizer")?;
