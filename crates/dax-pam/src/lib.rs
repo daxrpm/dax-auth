@@ -17,10 +17,9 @@
 use std::ffi::CStr;
 use std::path::PathBuf;
 
-use dax_runtime::{verify_face, Config, VerifyConfig, VerifyReason};
+use dax_runtime::{verify_face, Config, VerifyConfig};
 use pam::constants::{PamFlag, PamResultCode};
 use pam::module::{PamHandle, PamHooks};
-use pam::pam_try;
 use tracing::{error, info, warn};
 
 const ENV_VAULT: &str = "DAX_VAULT_PATH";
@@ -42,16 +41,35 @@ pam::pam_hooks!(DaxPam);
 
 impl PamHooks for DaxPam {
     fn sm_authenticate(pamh: &mut PamHandle, _args: Vec<&CStr>, _flags: PamFlag) -> PamResultCode {
+        // Loud breadcrumbs to stderr — these always reach the TTY of
+        // whatever loaded us (sudo, login, pamtester) so we can tell
+        // from the user's terminal whether our hook ran at all.
+        eprintln!("[dax-pam] sm_authenticate entered");
         init_logging();
 
-        let user = pam_try!(pamh.get_user(None));
+        let user = match pamh.get_user(None) {
+            Ok(u) => {
+                eprintln!("[dax-pam] target user = {u}");
+                u
+            }
+            Err(e) => {
+                eprintln!("[dax-pam] get_user failed: {e:?}");
+                return e;
+            }
+        };
         let env = match read_env() {
             Ok(env) => env,
             Err(missing) => {
+                eprintln!("[dax-pam] config error: {missing}");
                 error!("dax-pam: missing required configuration: {missing}");
                 return PamResultCode::PAM_AUTH_ERR;
             }
         };
+        eprintln!(
+            "[dax-pam] config ok, vault={} detector={}",
+            env.vault.display(),
+            env.detector.display()
+        );
 
         let config = VerifyConfig {
             user: &user,
@@ -64,8 +82,13 @@ impl PamHooks for DaxPam {
             match_threshold: dax_runtime::DEFAULT_MATCH_THRESHOLD,
         };
 
+        eprintln!("[dax-pam] running verify_face …");
         match verify_face(&config) {
             Ok(outcome) if outcome.matched => {
+                eprintln!(
+                    "[dax-pam] MATCH cosine={:.4} real={:.4}",
+                    outcome.best_cosine, outcome.liveness_real
+                );
                 info!(
                     user = %user,
                     cosine = outcome.best_cosine,
@@ -75,6 +98,13 @@ impl PamHooks for DaxPam {
                 PamResultCode::PAM_SUCCESS
             }
             Ok(outcome) => {
+                eprintln!(
+                    "[dax-pam] REJECT reason={:?} cosine={:.4} real={:.4} spoof={:.4}",
+                    outcome.reason,
+                    outcome.best_cosine,
+                    outcome.liveness_real,
+                    outcome.liveness_spoof
+                );
                 warn!(
                     user = %user,
                     cosine = outcome.best_cosine,
@@ -83,14 +113,10 @@ impl PamHooks for DaxPam {
                     reason = ?outcome.reason,
                     "dax-pam: rejected"
                 );
-                match outcome.reason {
-                    VerifyReason::LivenessSpoof => PamResultCode::PAM_AUTH_ERR,
-                    VerifyReason::BelowThreshold | VerifyReason::Match => {
-                        PamResultCode::PAM_AUTH_ERR
-                    }
-                }
+                PamResultCode::PAM_AUTH_ERR
             }
             Err(err) => {
+                eprintln!("[dax-pam] pipeline error: {err}");
                 error!(user = %user, error = %err, "dax-pam: pipeline error");
                 PamResultCode::PAM_AUTH_ERR
             }
