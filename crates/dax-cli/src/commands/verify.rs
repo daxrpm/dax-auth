@@ -1,33 +1,45 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use dax_runtime::{verify_face, VerifyConfig, VerifyReason};
 
-const PASSPHRASE_ENV: &str = "DAX_VAULT_PASSPHRASE";
+use crate::resolve::{default_user, resolve, Overrides};
 
-pub fn run(
-    user: &str,
-    vault_path: &Path,
-    device: u32,
-    detector_path: &Path,
-    recognizer_path: &Path,
-    liveness_path: &Path,
-) -> Result<()> {
-    let passphrase = std::env::var(PASSPHRASE_ENV).with_context(|| {
-        format!("environment variable `{PASSPHRASE_ENV}` is required to unlock the vault")
+#[derive(Debug)]
+pub struct Args {
+    pub user: Option<String>,
+    pub vault: Option<PathBuf>,
+    pub device: Option<u32>,
+    pub detector: Option<PathBuf>,
+    pub recognizer: Option<PathBuf>,
+    pub liveness_model: Option<PathBuf>,
+}
+
+pub fn run(args: Args) -> Result<()> {
+    let user = match args.user {
+        Some(u) => u,
+        None => default_user().context("--user not provided and could not be inferred")?,
+    };
+
+    let cfg = resolve(Overrides {
+        vault: args.vault.as_deref(),
+        detector: args.detector.as_deref(),
+        recognizer: args.recognizer.as_deref(),
+        liveness: args.liveness_model.as_deref(),
+        camera_index: args.device,
     })?;
 
-    let mut config = VerifyConfig::new(
-        user,
-        vault_path,
-        passphrase.as_bytes(),
-        detector_path,
-        recognizer_path,
-        liveness_path,
+    let mut verify_cfg = VerifyConfig::new(
+        &user,
+        &cfg.vault,
+        cfg.passphrase.as_bytes(),
+        &cfg.detector,
+        &cfg.recognizer,
+        &cfg.liveness,
     );
-    config.camera_index = device;
+    verify_cfg.camera_index = cfg.camera_index;
 
-    let outcome = verify_face(&config).context("running face verification")?;
+    let outcome = verify_face(&verify_cfg).context("running face verification")?;
 
     println!("Detection score : {:.3}", outcome.face_score);
     println!(
@@ -36,7 +48,7 @@ pub fn run(
     );
     println!(
         "Best match      : template #{} cosine={:.4} (threshold={})",
-        outcome.best_template, outcome.best_cosine, config.match_threshold
+        outcome.best_template, outcome.best_cosine, verify_cfg.match_threshold
     );
 
     match outcome.reason {

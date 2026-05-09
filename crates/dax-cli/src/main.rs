@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 mod commands;
+mod resolve;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -108,52 +109,60 @@ enum Command {
     },
 
     /// Capture multiple frames and store the user's templates in the vault.
+    ///
+    /// All paths default to /etc/dax-auth/config.toml when run as root
+    /// after `scripts/install.sh`. The user defaults to `$SUDO_USER`.
     Enroll {
-        /// Username to enrol.
+        /// Username to enrol. Defaults to `$SUDO_USER` (the human who
+        /// invoked sudo) or `$USER`.
         #[arg(short, long)]
-        user: String,
+        user: Option<String>,
 
-        /// Path to the vault file. Created if missing.
+        /// Path to the vault file. Defaults to the value in
+        /// /etc/dax-auth/config.toml.
         #[arg(long)]
-        vault: PathBuf,
+        vault: Option<PathBuf>,
 
         /// Number of valid captures required to complete enrolment.
         #[arg(short = 'n', long, default_value_t = 5)]
         captures: usize,
 
-        /// Camera index for RGB capture.
-        #[arg(short, long, default_value_t = 0)]
-        device: u32,
+        /// Camera index for RGB capture. Defaults to the value in
+        /// /etc/dax-auth/config.toml or 0.
+        #[arg(short, long)]
+        device: Option<u32>,
 
         #[arg(long, alias = "det")]
-        detector: PathBuf,
+        detector: Option<PathBuf>,
 
         #[arg(long, alias = "rec")]
-        recognizer: PathBuf,
+        recognizer: Option<PathBuf>,
 
         #[arg(long, alias = "live")]
-        liveness_model: PathBuf,
+        liveness_model: Option<PathBuf>,
     },
 
     /// Verify a single capture against the templates stored for the user.
+    ///
+    /// All paths default to /etc/dax-auth/config.toml when run as root.
     Verify {
         #[arg(short, long)]
-        user: String,
+        user: Option<String>,
 
         #[arg(long)]
-        vault: PathBuf,
+        vault: Option<PathBuf>,
 
-        #[arg(short, long, default_value_t = 0)]
-        device: u32,
+        #[arg(short, long)]
+        device: Option<u32>,
 
         #[arg(long, alias = "det")]
-        detector: PathBuf,
+        detector: Option<PathBuf>,
 
         #[arg(long, alias = "rec")]
-        recognizer: PathBuf,
+        recognizer: Option<PathBuf>,
 
         #[arg(long, alias = "live")]
-        liveness_model: PathBuf,
+        liveness_model: Option<PathBuf>,
     },
 
     /// Encrypted vault management.
@@ -163,22 +172,23 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum VaultCommand {
-    /// Create an empty encrypted vault at the given path.
+    /// Create an empty encrypted vault.
     Init {
-        /// Path of the vault file to create.
+        /// Path of the vault file to create. Defaults to the value
+        /// in /etc/dax-auth/config.toml.
         #[arg(long)]
-        vault: PathBuf,
+        vault: Option<PathBuf>,
     },
     /// List enrolled users and their template counts.
     List {
-        /// Path to the vault file.
+        /// Path to the vault file. Defaults to /etc/dax-auth/config.toml.
         #[arg(long)]
-        vault: PathBuf,
+        vault: Option<PathBuf>,
     },
     /// Remove all templates for a user.
     Remove {
         #[arg(long)]
-        vault: PathBuf,
+        vault: Option<PathBuf>,
 
         #[arg(short, long)]
         user: String,
@@ -221,15 +231,15 @@ fn main() -> Result<()> {
             detector,
             recognizer,
             liveness_model,
-        } => commands::enroll::run(
-            &user,
-            &vault,
+        } => commands::enroll::run(commands::enroll::Args {
+            user,
+            vault,
             captures,
             device,
-            &detector,
-            &recognizer,
-            &liveness_model,
-        ),
+            detector,
+            recognizer,
+            liveness_model,
+        }),
         Command::Verify {
             user,
             vault,
@@ -237,18 +247,20 @@ fn main() -> Result<()> {
             detector,
             recognizer,
             liveness_model,
-        } => commands::verify::run(
-            &user,
-            &vault,
+        } => commands::verify::run(commands::verify::Args {
+            user,
+            vault,
             device,
-            &detector,
-            &recognizer,
-            &liveness_model,
-        ),
+            detector,
+            recognizer,
+            liveness_model,
+        }),
         Command::Vault(vault_cmd) => match vault_cmd {
-            VaultCommand::Init { vault } => commands::vault::init(&vault),
-            VaultCommand::List { vault } => commands::vault::list(&vault),
-            VaultCommand::Remove { vault, user } => commands::vault::remove(&vault, &user),
+            VaultCommand::Init { vault } => commands::vault::init(vault.as_deref()),
+            VaultCommand::List { vault } => commands::vault::list(vault.as_deref()),
+            VaultCommand::Remove { vault, user } => {
+                commands::vault::remove(vault.as_deref(), &user)
+            }
         },
     }
 }

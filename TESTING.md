@@ -195,7 +195,22 @@ DAX_VAULT_PASSPHRASE=wrong cargo run -p dax-cli --quiet -- \
 
 Goal: full enrolment and verification through the same code path PAM uses.
 
+> If you have already run `sudo ./scripts/install.sh` and selected
+> `Install`, the commands below collapse to **`sudo daxauth enroll`** and
+> **`sudo daxauth verify`** — the binary reads the vault path, the model
+> paths and the passphrase from `/etc/dax-auth/config.toml` and
+> `/etc/dax-auth/secret`. Use the explicit-flag form below when you want
+> to test against a temporary vault outside the system install.
+
 ### 6.1 Enrol
+
+System install (recommended):
+
+```sh
+sudo daxauth enroll
+```
+
+Or, against a temporary vault without installing:
 
 ```sh
 rm -f /tmp/test-vault.bin
@@ -208,37 +223,24 @@ DAX_VAULT_PASSPHRASE=test-secret cargo run -p dax-cli --quiet -- enroll \
 
 Move slightly between captures (small head turns, blink, smile). Each capture goes through detection + liveness; a captured frame that fails either gate is silently retried.
 
-**Pass criteria** — `Enrolled '$USER' with 5 templates …`. List must show 5:
-
-```sh
-DAX_VAULT_PASSPHRASE=test-secret cargo run -p dax-cli --quiet -- \
-    vault list --vault /tmp/test-vault.bin
-```
+**Pass criteria** — `Enrolled '$USER' with 5 templates …`. Confirm with `sudo daxauth vault list`.
 
 ### 6.2 Verify (matches)
 
 ```sh
-DAX_VAULT_PASSPHRASE=test-secret cargo run -p dax-cli --quiet -- verify \
-    --user "$USER" --vault /tmp/test-vault.bin --device 0 \
-    --detector       models/buffalo_s/det_500m.onnx \
-    --recognizer     models/buffalo_s/w600k_mbf.onnx \
-    --liveness-model models/liveness/MiniFASNetV2.onnx
+sudo daxauth verify
 ```
 
 **Pass criteria** — `Verdict : ✓ MATCH`, exit code 0, cosine ≥ 0.5.
 
 ### 6.3 Verify against a phone replay (must reject)
 
-Hold the phone with your face on screen and run the verify command again. **Pass criteria** — `Verdict : ✗ SPOOF (liveness rejected)`, exit code 2. The cosine is intentionally `0.0` because we never get past the liveness gate.
+Hold the phone with your face on screen and run `sudo daxauth verify` again. **Pass criteria** — `Verdict : ✗ SPOOF (liveness rejected)`, exit code 2. The cosine is intentionally `0.0` because we never get past the liveness gate.
 
 ### 6.4 Verify the wrong user
 
 ```sh
-DAX_VAULT_PASSPHRASE=test-secret cargo run -p dax-cli --quiet -- verify \
-    --user nobody --vault /tmp/test-vault.bin --device 0 \
-    --detector       models/buffalo_s/det_500m.onnx \
-    --recognizer     models/buffalo_s/w600k_mbf.onnx \
-    --liveness-model models/liveness/MiniFASNetV2.onnx
+sudo daxauth verify --user nobody
 ```
 
 **Pass criteria** — exits non-zero with `user 'nobody' is not enrolled`.

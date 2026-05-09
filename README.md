@@ -140,13 +140,23 @@ pamtester: performing operation - authenticate
 pamtester: successfully authenticated
 ```
 
-### 7. Install system-wide (optional)
+### 7. Install system-wide (recommended)
 
 ```sh
 ./scripts/install.sh
 ```
 
-The interactive installer detects Fedora / Debian / Arch family, builds the release artefacts if missing, copies the binary to `/usr/local/bin/`, the PAM module to the distribution's PAM security directory, and the models to `/usr/share/daxauth/`. It prints the exact `auth sufficient …` line you should add to `/etc/pam.d/sudo` (or any other service) **only after you have a recovery shell open and the `pamtest.sh` smoke test is green**. Run it again to **verify** an existing install or **uninstall**.
+The interactive installer detects Fedora / Debian / Arch / openSUSE / Alpine, picks the right package manager, locates the PAM security directory for the distro, probes V4L2 for RGB and IR cameras, builds the release artefacts if missing, fetches the models if missing, and writes both `/etc/dax-auth/config.toml` (paths and camera indices) and `/etc/dax-auth/secret` (random 32-byte passphrase, 600 root-only).
+
+After install, the CLI **does not need any flags or environment variables**:
+
+```sh
+sudo daxauth enroll        # uses $SUDO_USER, paths from config, passphrase from secret file
+sudo daxauth verify        # same
+sudo daxauth vault list    # same
+```
+
+When `sudo daxauth verify` prints `MATCH`, run the installer again and pick the **Configure PAM service** menu entry. It lists the entries under `/etc/pam.d/`, takes a timestamped backup of the one you choose, inserts the `auth sufficient libdax_pam.so` line tagged so a future run can remove it, and optionally smoke-tests it through `pamtester` on the spot.
 
 ## Subcommand reference
 

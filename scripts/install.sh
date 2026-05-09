@@ -446,25 +446,26 @@ EOF
 print_post_install() {
     heading "Next steps"
     cat <<EOF
-  1) Enrol your face. Read the passphrase from the secret file:
+  Now that the binary, the PAM module, the models, the config and the
+  secret are in place, the CLI runs without any flags or environment
+  variables. The user defaults to whoever invoked sudo (\$SUDO_USER),
+  paths come from $INSTALL_CONFIG_FILE, the passphrase from
+  $INSTALL_SECRET_FILE.
 
-       export DAX_VAULT_PASSPHRASE="\$(sudo cat $INSTALL_SECRET_FILE)"
+  1) Enrol your face (5 captures, move slightly between them):
 
-       sudo -E daxauth enroll --user "\$USER" --vault $INSTALL_VAULT_FILE \\
-           --captures 5 --device 0 \\
-           --detector       $INSTALL_SHARE/models/buffalo_s/det_500m.onnx \\
-           --recognizer     $INSTALL_SHARE/models/buffalo_s/w600k_mbf.onnx \\
-           --liveness-model $INSTALL_SHARE/models/liveness/MiniFASNetV2.onnx
+       sudo daxauth enroll
 
-  2) Verify it works (must succeed before configuring PAM):
+  2) Verify (must succeed before wiring PAM):
 
-       sudo -E daxauth verify --user "\$USER" --vault $INSTALL_VAULT_FILE --device 0 \\
-           --detector       $INSTALL_SHARE/models/buffalo_s/det_500m.onnx \\
-           --recognizer     $INSTALL_SHARE/models/buffalo_s/w600k_mbf.onnx \\
-           --liveness-model $INSTALL_SHARE/models/liveness/MiniFASNetV2.onnx
+       sudo daxauth verify
 
-  3) When step 2 prints "MATCH", come back and run this script again:
-     pick "Configure PAM service" to wire the module into /etc/pam.d/<service>.
+  3) When step 2 prints "MATCH", come back and run this script again,
+     pick option 2 ("Configure PAM service"). It backs up the file,
+     inserts the dax-auth line, and offers a pamtester smoke test.
+
+  Tip: every flag (--user, --vault, --detector, …) is still accepted
+  if you want to override the defaults from the config file.
 EOF
 }
 
