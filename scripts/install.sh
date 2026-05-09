@@ -42,12 +42,14 @@ LOG_FILE="${TMPDIR:-/tmp}/dax-auth-install-$(date +%Y%m%d-%H%M%S).log"
 : >"$LOG_FILE"
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >>"$LOG_FILE"; }
 
-heading() { printf "\n%s━━%s %s%s%s\n" "$CYAN" "$RESET" "$BOLD" "$*" "$RESET"; log "[step] $*"; }
-substep() { printf "  %s∙%s %s\n" "$DIM" "$RESET" "$*"; log "[..] $*"; }
-ok()      { printf "  %s✓%s %s\n" "$GREEN" "$RESET" "$*"; log "[ok] $*"; }
-warn()    { printf "  %s!%s %s\n" "$YELLOW" "$RESET" "$*"; log "[!!] $*"; }
+# All log helpers write to stderr so they never leak into the stdout
+# of a command substitution (e.g. `backup="$(backup_pam_file …)"`).
+heading() { printf "\n%s━━%s %s%s%s\n" "$CYAN" "$RESET" "$BOLD" "$*" "$RESET" >&2; log "[step] $*"; }
+substep() { printf "  %s∙%s %s\n" "$DIM" "$RESET" "$*" >&2; log "[..] $*"; }
+ok()      { printf "  %s✓%s %s\n" "$GREEN" "$RESET" "$*" >&2; log "[ok] $*"; }
+warn()    { printf "  %s!%s %s\n" "$YELLOW" "$RESET" "$*" >&2; log "[!!] $*"; }
 err()     { printf "  %s✗%s %s\n" "$RED" "$RESET" "$*" >&2; log "[xx] $*"; }
-note()    { printf "    %s%s%s\n" "$DIM" "$*" "$RESET"; }
+note()    { printf "    %s%s%s\n" "$DIM" "$*" "$RESET" >&2; }
 
 abort() {
     err "$1"
