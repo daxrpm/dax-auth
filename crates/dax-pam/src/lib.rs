@@ -6,19 +6,20 @@
 //! the actual face-recognition pipeline lives in `dax-runtime` so
 //! the CLI and PAM share a single implementation.
 //!
-//! Output policy: this module is intentionally silent on the TTY.
-//! When auth succeeds we return `PAM_SUCCESS` and the user proceeds
-//! without any message. When auth fails we return `PAM_AUTH_ERR`,
-//! and the calling stack (sudo, login, …) takes over with its own
-//! prompt — typically the password fallback.
+//! Output policy: a single status line on the calling TTY, coloured
+//! when the destination is interactive. Successful auths print
+//! something like `✓  authenticated  ·  sim 70%  ·  live 99%`;
+//! rejections print a one-liner explaining why and let the calling
+//! stack (sudo, login, …) fall through to its password prompt.
 
 #![cfg(target_os = "linux")]
 #![allow(unsafe_code)] // Required for the C ABI shim emitted by pam_hooks!.
 
 use std::ffi::CStr;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
-use dax_runtime::{Config, VerifyConfig, verify_face};
+use dax_runtime::{Config, RuntimeError, VerifyConfig, VerifyReason, verify_face};
 use pam::constants::{PamFlag, PamResultCode};
 use pam::items::User;
 use pam::module::{PamHandle, PamHooks};
@@ -63,8 +64,42 @@ impl PamHooks for DaxPam {
         };
 
         match verify_face(&config) {
-            Ok(outcome) if outcome.matched => PamResultCode::PAM_SUCCESS,
-            _ => PamResultCode::PAM_AUTH_ERR,
+            Ok(outcome) if outcome.matched => {
+                ok(format_args!(
+                    "authenticated  ·  sim {sim:.0}%  ·  live {live:.0}%",
+                    sim = outcome.best_cosine * 100.0,
+                    live = outcome.liveness_real * 100.0,
+                ));
+                PamResultCode::PAM_SUCCESS
+            }
+            Ok(outcome) => {
+                match outcome.reason {
+                    VerifyReason::LivenessSpoof => warn(format_args!(
+                        "spoof detected  ·  live {live:.0}%  ·  spoof {sp:.0}%",
+                        live = outcome.liveness_real * 100.0,
+                        sp = outcome.liveness_spoof * 100.0,
+                    )),
+                    VerifyReason::BelowThreshold => warn(format_args!(
+                        "no match  ·  sim {sim:.0}%  ·  threshold {thr:.0}%",
+                        sim = outcome.best_cosine * 100.0,
+                        thr = config.match_threshold * 100.0,
+                    )),
+                    VerifyReason::Match => warn(format_args!("unexpected match path")),
+                }
+                PamResultCode::PAM_AUTH_ERR
+            }
+            Err(RuntimeError::NoFace) => {
+                err(format_args!("no face detected"));
+                PamResultCode::PAM_AUTH_ERR
+            }
+            Err(RuntimeError::UserNotEnrolled(u)) => {
+                err(format_args!("user `{u}` is not enrolled"));
+                PamResultCode::PAM_AUTH_ERR
+            }
+            Err(other) => {
+                err(format_args!("{other}"));
+                PamResultCode::PAM_AUTH_ERR
+            }
         }
     }
 
@@ -132,6 +167,42 @@ fn read_env() -> Result<PamEnv, String> {
         liveness,
         camera,
     })
+}
+
+// ──────────────────────── status output ────────────────────────
+//
+// Tiny, dependency-free formatter. ANSI colour escapes are emitted
+// only when stderr is a TTY; piped output stays clean.
+
+const C_GREEN: &str = "\x1b[1;32m";
+const C_YELLOW: &str = "\x1b[1;33m";
+const C_RED: &str = "\x1b[1;31m";
+const C_DIM: &str = "\x1b[2m";
+const C_RESET: &str = "\x1b[0m";
+
+fn ok(args: std::fmt::Arguments<'_>) {
+    write_status('\u{2713}', C_GREEN, args);
+}
+
+fn warn(args: std::fmt::Arguments<'_>) {
+    write_status('\u{2717}', C_YELLOW, args);
+}
+
+fn err(args: std::fmt::Arguments<'_>) {
+    write_status('\u{2717}', C_RED, args);
+}
+
+fn write_status(symbol: char, color: &str, args: std::fmt::Arguments<'_>) {
+    let mut stderr = std::io::stderr();
+    let coloured = stderr.is_terminal();
+    let _ = if coloured {
+        writeln!(
+            stderr,
+            "{color}{symbol}{C_RESET}  {C_DIM}dax-auth{C_RESET}  {args}"
+        )
+    } else {
+        writeln!(stderr, "{symbol}  dax-auth  {args}")
+    };
 }
 
 /// Read the PAM user, working around `pam-bindings 0.1.1`'s
