@@ -1,0 +1,20 @@
+[package]
+name = "dax-pam"
+description = "PAM module that authenticates users via dax-auth's face pipeline."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "dax_pam"
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dax-runtime.workspace = true
+pam-bindings.workspace = true

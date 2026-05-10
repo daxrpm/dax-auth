@@ -1,0 +1,95 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dax-core",
+    "crates/dax-capture",
+    "crates/dax-detect",
+    "crates/dax-embed",
+    "crates/dax-liveness",
+    "crates/dax-store",
+    "crates/dax-runtime",
+    "crates/dax-pam",
+    "crates/dax-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+authors = ["Dax <dax@dax-ec.ru>"]
+repository = "https://github.com/daxrpm/dax-auth"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[workspace.dependencies]
+# Internal crates
+dax-core = { path = "crates/dax-core" }
+dax-capture = { path = "crates/dax-capture" }
+dax-detect = { path = "crates/dax-detect" }
+dax-embed = { path = "crates/dax-embed" }
+dax-liveness = { path = "crates/dax-liveness" }
+dax-store = { path = "crates/dax-store" }
+dax-runtime = { path = "crates/dax-runtime" }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Camera capture
+nokhwa = { version = "0.10", default-features = false, features = ["input-native", "decoding"] }
+# Direct V4L2 access for IR sensors (nokhwa fails to negotiate GREY format with
+# Windows-Hello-class IR cameras as of 0.10.10).
+v4l = "0.14"
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+imageproc = { version = "0.25", default-features = false }
+
+# ONNX Runtime
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
+ndarray = "0.17"
+
+# Linear algebra (SVD for Umeyama similarity transform)
+nalgebra = { version = "0.34", default-features = false, features = ["std"] }
+
+# Cryptography (RustCrypto)
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand = "0.9"
+zeroize = { version = "1", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+# PAM bindings (Linux only)
+pam-bindings = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

@@ -1,0 +1,23 @@
+[package]
+name = "dax-embed"
+description = "Face embedding (ArcFace / MobileFaceNet) and similarity for dax-auth."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dax-capture.workspace = true
+dax-detect.workspace = true
+image.workspace = true
+imageproc.workspace = true
+nalgebra.workspace = true
+ndarray.workspace = true
+ort.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

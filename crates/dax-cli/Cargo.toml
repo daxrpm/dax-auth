@@ -1,0 +1,30 @@
+[package]
+name = "dax-cli"
+description = "Command-line interface for dax-auth."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "daxauth"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+dax-capture.workspace = true
+dax-detect.workspace = true
+dax-embed.workspace = true
+dax-liveness.workspace = true
+dax-runtime.workspace = true
+dax-store.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+image.workspace = true
+imageproc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

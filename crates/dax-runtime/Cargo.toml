@@ -1,0 +1,23 @@
+[package]
+name = "dax-runtime"
+description = "Reusable face authentication pipeline shared between CLI and PAM."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dax-capture.workspace = true
+dax-detect.workspace = true
+dax-embed.workspace = true
+dax-liveness.workspace = true
+dax-store.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
