@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 use dax_runtime::{verify_face, Config, VerifyConfig};
 use pam::constants::{PamFlag, PamResultCode};
+use pam::items::User;
 use pam::module::{PamHandle, PamHooks};
 use tracing::{error, info, warn};
 
@@ -47,13 +48,13 @@ impl PamHooks for DaxPam {
         eprintln!("[dax-pam] sm_authenticate entered");
         init_logging();
 
-        let user = match pamh.get_user(None) {
+        let user = match resolve_pam_user(pamh) {
             Ok(u) => {
                 eprintln!("[dax-pam] target user = {u}");
                 u
             }
             Err(e) => {
-                eprintln!("[dax-pam] get_user failed: {e:?}");
+                eprintln!("[dax-pam] could not resolve PAM user: {e:?}");
                 return e;
             }
         };
@@ -193,6 +194,30 @@ fn read_env() -> Result<PamEnv, String> {
         liveness,
         camera,
     })
+}
+
+/// Read the PAM user, working around `pam-bindings 0.1.1`'s
+/// `get_user` which returns `Err(PAM_SUCCESS)` on the happy path
+/// because of a `*const *mut`/`*mut *const` mismatch in the FFI
+/// glue. We fall back to `get_item::<User>()`, whose pointer
+/// plumbing is correct, and convert the C-string into an owned
+/// `String` we can pass into `dax-runtime`.
+fn resolve_pam_user(pamh: &mut PamHandle) -> Result<String, PamResultCode> {
+    if let Ok(u) = pamh.get_user(None) {
+        if !u.is_empty() {
+            return Ok(u);
+        }
+    }
+    match pamh.get_item::<User<'_>>() {
+        Ok(Some(item)) => item
+            .0
+            .to_str()
+            .map(str::to_owned)
+            .map_err(|_| PamResultCode::PAM_AUTH_ERR),
+        Ok(None) => Err(PamResultCode::PAM_USER_UNKNOWN),
+        Err(PamResultCode::PAM_SUCCESS) => Err(PamResultCode::PAM_AUTH_ERR),
+        Err(other) => Err(other),
+    }
 }
 
 fn init_logging() {
