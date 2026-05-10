@@ -368,7 +368,7 @@ rgb_device = $rgb_dev
 $ir_line
 
 [security]
-match_threshold = 0.5
+match_threshold = 0.6
 EOF
 }
 
