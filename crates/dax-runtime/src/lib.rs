@@ -11,4 +11,7 @@ mod verify;
 
 pub use config::{CameraConfig, Config, PathsConfig, SecurityConfig, SYSTEM_CONFIG_PATH};
 pub use error::{RuntimeError, RuntimeResult};
-pub use verify::{verify_face, VerifyConfig, VerifyOutcome, VerifyReason, DEFAULT_MATCH_THRESHOLD};
+pub use verify::{
+    verify_face, IrCheckOutcome, VerifyConfig, VerifyOutcome, VerifyReason,
+    DEFAULT_IR_CENTER_TOLERANCE, DEFAULT_MATCH_THRESHOLD,
+};

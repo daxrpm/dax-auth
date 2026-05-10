@@ -19,7 +19,7 @@ use std::ffi::CStr;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
-use dax_runtime::{Config, RuntimeError, VerifyConfig, VerifyReason, verify_face};
+use dax_runtime::{verify_face, Config, IrCheckOutcome, RuntimeError, VerifyConfig, VerifyReason};
 use pam::constants::{PamFlag, PamResultCode};
 use pam::items::User;
 use pam::module::{PamHandle, PamHooks};
@@ -47,9 +47,8 @@ impl PamHooks for DaxPam {
             Ok(u) => u,
             Err(code) => return code,
         };
-        let env = match read_env() {
-            Ok(env) => env,
-            Err(_) => return PamResultCode::PAM_AUTH_ERR,
+        let Ok(env) = read_env() else {
+            return PamResultCode::PAM_AUTH_ERR;
         };
 
         let config = VerifyConfig {
@@ -57,16 +56,19 @@ impl PamHooks for DaxPam {
             vault_path: &env.vault,
             passphrase: env.passphrase.as_bytes(),
             camera_index: env.camera,
+            ir_camera_index: env.ir_camera,
             detector_path: &env.detector,
             recognizer_path: &env.recognizer,
             liveness_path: &env.liveness,
             match_threshold: dax_runtime::DEFAULT_MATCH_THRESHOLD,
+            ir_center_tolerance: dax_runtime::DEFAULT_IR_CENTER_TOLERANCE,
         };
 
         match verify_face(&config) {
             Ok(outcome) if outcome.matched => {
+                let ir = ir_label(outcome.ir_check);
                 ok(format_args!(
-                    "authenticated  ·  sim {sim:.0}%  ·  live {live:.0}%",
+                    "authenticated  ·  sim {sim:.0}%  ·  live {live:.0}%{ir}",
                     sim = outcome.best_cosine * 100.0,
                     live = outcome.liveness_real * 100.0,
                 ));
@@ -78,6 +80,14 @@ impl PamHooks for DaxPam {
                         "spoof detected  ·  live {live:.0}%  ·  spoof {sp:.0}%",
                         live = outcome.liveness_real * 100.0,
                         sp = outcome.liveness_spoof * 100.0,
+                    )),
+                    VerifyReason::IrCrossCheckFailed => warn(format_args!(
+                        "spoof detected  ·  ir {what}",
+                        what = match outcome.ir_check {
+                            IrCheckOutcome::NoFace => "saw no face",
+                            IrCheckOutcome::OffPosition => "bbox mismatch",
+                            _ => "rejected",
+                        }
                     )),
                     VerifyReason::BelowThreshold => warn(format_args!(
                         "no match  ·  sim {sim:.0}%  ·  threshold {thr:.0}%",
@@ -119,6 +129,7 @@ struct PamEnv {
     recognizer: PathBuf,
     liveness: PathBuf,
     camera: u32,
+    ir_camera: Option<u32>,
 }
 
 fn read_env() -> Result<PamEnv, String> {
@@ -155,6 +166,7 @@ fn read_env() -> Result<PamEnv, String> {
     let camera = env_camera
         .or_else(|| config.as_ref().map(|c| c.camera.rgb_device))
         .unwrap_or(0);
+    let ir_camera = config.as_ref().and_then(|c| c.camera.ir_device);
     let passphrase = env_passphrase
         .or(secret)
         .ok_or_else(|| format!("vault passphrase ({ENV_PASSPHRASE} or {SECRET_FILE})"))?;
@@ -166,7 +178,18 @@ fn read_env() -> Result<PamEnv, String> {
         recognizer,
         liveness,
         camera,
+        ir_camera,
     })
+}
+
+/// Render the IR cross-check result as a status-line suffix.
+fn ir_label(check: IrCheckOutcome) -> &'static str {
+    match check {
+        IrCheckOutcome::Disabled => "",
+        IrCheckOutcome::Matched => "  ·  ir ok",
+        IrCheckOutcome::NoFace => "  ·  ir no face",
+        IrCheckOutcome::OffPosition => "  ·  ir mismatch",
+    }
 }
 
 // ──────────────────────── status output ────────────────────────

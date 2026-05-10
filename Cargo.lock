@@ -577,8 +577,6 @@ version = "0.1.0"
 dependencies = [
  "dax-runtime",
  "pam-bindings",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

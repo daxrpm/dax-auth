@@ -38,6 +38,7 @@ pub fn run(args: Args) -> Result<()> {
         &cfg.liveness,
     );
     verify_cfg.camera_index = cfg.camera_index;
+    verify_cfg.ir_camera_index = cfg.ir_camera_index;
 
     let outcome = verify_face(&verify_cfg).context("running face verification")?;
 
@@ -46,6 +47,7 @@ pub fn run(args: Args) -> Result<()> {
         "Liveness        : real={:.4} spoof={:.4}",
         outcome.liveness_real, outcome.liveness_spoof
     );
+    println!("IR cross-check  : {:?}", outcome.ir_check);
     println!(
         "Best match      : template #{} cosine={:.4} (threshold={})",
         outcome.best_template, outcome.best_cosine, verify_cfg.match_threshold
@@ -58,6 +60,10 @@ pub fn run(args: Args) -> Result<()> {
         }
         VerifyReason::LivenessSpoof => {
             println!("Verdict         : ✗ SPOOF (liveness rejected)");
+            std::process::exit(2);
+        }
+        VerifyReason::IrCrossCheckFailed => {
+            println!("Verdict         : ✗ SPOOF (IR cross-check failed)");
             std::process::exit(2);
         }
         VerifyReason::BelowThreshold => {

@@ -25,6 +25,10 @@ pub struct Resolved {
     pub recognizer: PathBuf,
     pub liveness: PathBuf,
     pub camera_index: u32,
+    /// `Some(N)` if the host has an IR sensor configured under
+    /// `[camera] ir_device = N` in `/etc/dax-auth/config.toml`. The
+    /// pipeline uses it for the Hello-style RGB↔IR cross-check.
+    pub ir_camera_index: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -65,6 +69,7 @@ pub fn resolve(overrides: Overrides<'_>) -> Result<Resolved> {
         .camera_index
         .or_else(|| config.as_ref().map(|c| c.camera.rgb_device))
         .unwrap_or(0);
+    let ir_camera_index = config.as_ref().and_then(|c| c.camera.ir_device);
 
     let passphrase = read_passphrase()?;
 
@@ -75,6 +80,7 @@ pub fn resolve(overrides: Overrides<'_>) -> Result<Resolved> {
         recognizer,
         liveness,
         camera_index,
+        ir_camera_index,
     })
 }
 
