@@ -8,13 +8,25 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::crypto::{decrypt, derive_key, encrypt, wipe_key, NONCE_LEN, SALT_LEN};
+use crate::crypto::{
+    decrypt, derive_key, encrypt, wipe_key, KdfParams, DEFAULT_PARAMS, LEGACY_V1_PARAMS, NONCE_LEN,
+    SALT_LEN,
+};
 use crate::error::{StoreError, StoreResult};
 
-/// 8-byte magic that identifies a dax-auth vault file. The trailing
-/// digits track the on-disk format version; bumping the second one
-/// signals a breaking change.
-const MAGIC: &[u8; 8] = b"DAXVLT01";
+/// Original on-disk format. Layout:
+/// `MAGIC | VERSION(1) | SALT(16) | NONCE(12) | CIPHERTEXT`
+/// KDF parameters were hard-coded (19 MiB / 2 / 1) and not stored
+/// in the file. Read-only at this point: new writes always emit V2.
+const MAGIC_V1: &[u8; 8] = b"DAXVLT01";
+
+/// Current on-disk format. Layout:
+/// `MAGIC | VERSION(1) | M_COST_KIB(4) | T_COST(4) | P_COST(4) | SALT(16) | NONCE(12) | CIPHERTEXT`
+/// Encoding the Argon2 parameters in the header lets us tighten the
+/// defaults without invalidating existing files.
+const MAGIC_V2: &[u8; 8] = b"DAXVLT02";
+const KDF_PARAMS_LEN: usize = 12;
+
 /// Plaintext schema version. Independent from `MAGIC`; allows minor
 /// schema additions without rewriting the on-disk header.
 const SCHEMA_VERSION: u8 = 1;
@@ -59,19 +71,62 @@ impl Vault {
     }
 
     /// Load and decrypt a vault from disk.
+    ///
+    /// Both `DAXVLT01` (legacy) and `DAXVLT02` (current, with KDF
+    /// parameters in the header) layouts are accepted. Saves always
+    /// emit the current layout; an older file silently migrates the
+    /// next time the caller persists changes.
     pub fn open(path: impl AsRef<Path>, passphrase: &[u8]) -> StoreResult<Self> {
         let raw = fs::read(path.as_ref())?;
-        if raw.len() < MAGIC.len() + 1 + SALT_LEN + NONCE_LEN {
+        if raw.len() < MAGIC_V1.len() + 1 {
             return Err(StoreError::Malformed);
         }
-        if &raw[..MAGIC.len()] != MAGIC {
+        let mut cursor = MAGIC_V1.len();
+        let magic = &raw[..cursor];
+
+        let params = if magic == MAGIC_V1 {
+            LEGACY_V1_PARAMS
+        } else if magic == MAGIC_V2 {
+            // V2 reserves 12 bytes for the KDF parameters between
+            // VERSION and SALT.
+            if raw.len() < cursor + 1 + KDF_PARAMS_LEN + SALT_LEN + NONCE_LEN {
+                return Err(StoreError::Malformed);
+            }
+            // Skip VERSION first, then read params.
+            let v_cursor = cursor + 1;
+            let m = u32::from_le_bytes(
+                raw[v_cursor..v_cursor + 4]
+                    .try_into()
+                    .map_err(|_| StoreError::Malformed)?,
+            );
+            let t = u32::from_le_bytes(
+                raw[v_cursor + 4..v_cursor + 8]
+                    .try_into()
+                    .map_err(|_| StoreError::Malformed)?,
+            );
+            let p = u32::from_le_bytes(
+                raw[v_cursor + 8..v_cursor + 12]
+                    .try_into()
+                    .map_err(|_| StoreError::Malformed)?,
+            );
+            KdfParams::new(m, t, p)
+        } else {
             return Err(StoreError::BadMagic);
-        }
-        let mut cursor = MAGIC.len();
+        };
+
+        // VERSION
         let version = raw[cursor];
         cursor += 1;
         if version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedVersion(version));
+        }
+        // Skip the V2 KDF block if present.
+        if magic == MAGIC_V2 {
+            cursor += KDF_PARAMS_LEN;
+        }
+        // SALT + NONCE + CIPHERTEXT
+        if raw.len() < cursor + SALT_LEN + NONCE_LEN {
+            return Err(StoreError::Malformed);
         }
         let salt = <[u8; SALT_LEN]>::try_from(&raw[cursor..cursor + SALT_LEN])
             .map_err(|_| StoreError::Malformed)?;
@@ -81,14 +136,14 @@ impl Vault {
         cursor += NONCE_LEN;
         let ciphertext = &raw[cursor..];
 
-        let mut key = derive_key(passphrase, &salt)?;
+        let mut key = derive_key(passphrase, &salt, params)?;
         let plaintext = decrypt(&key, &nonce, ciphertext);
         wipe_key(&mut key);
         let plaintext = plaintext?;
 
         let data: VaultData =
             serde_json::from_slice(&plaintext).map_err(|e| StoreError::Serde(e.to_string()))?;
-        debug!(users = data.users.len(), "vault opened");
+        debug!(users = data.users.len(), magic = ?std::str::from_utf8(magic).unwrap_or("?"), "vault opened");
         Ok(Self { data })
     }
 
@@ -111,7 +166,8 @@ impl Vault {
         rng.fill_bytes(&mut salt);
         rng.fill_bytes(&mut nonce);
 
-        let mut key = derive_key(passphrase, &salt)?;
+        let params = DEFAULT_PARAMS;
+        let mut key = derive_key(passphrase, &salt, params)?;
         let ciphertext = encrypt(&key, &nonce, &plaintext);
         wipe_key(&mut key);
         let ciphertext = ciphertext?;
@@ -119,8 +175,11 @@ impl Vault {
         let tmp_path = path.with_extension("tmp");
         {
             let mut file = fs::File::create(&tmp_path)?;
-            file.write_all(MAGIC)?;
+            file.write_all(MAGIC_V2)?;
             file.write_all(&[SCHEMA_VERSION])?;
+            file.write_all(&params.m_cost_kib.to_le_bytes())?;
+            file.write_all(&params.t_cost.to_le_bytes())?;
+            file.write_all(&params.p_cost.to_le_bytes())?;
             file.write_all(&salt)?;
             file.write_all(&nonce)?;
             file.write_all(&ciphertext)?;

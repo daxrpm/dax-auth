@@ -9,17 +9,48 @@ pub const SALT_LEN: usize = 16;
 pub const NONCE_LEN: usize = 12;
 pub const KEY_LEN: usize = 32;
 
+/// Argon2id cost parameters used to derive the file's encryption key.
+/// Stored alongside the salt and nonce so a future tightening (or
+/// loosening) of the defaults does not invalidate existing vaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KdfParams {
+    /// Memory cost in KiB.
+    pub m_cost_kib: u32,
+    pub t_cost: u32,
+    pub p_cost: u32,
+}
+
+impl KdfParams {
+    #[must_use]
+    pub const fn new(m_cost_kib: u32, t_cost: u32, p_cost: u32) -> Self {
+        Self {
+            m_cost_kib,
+            t_cost,
+            p_cost,
+        }
+    }
+}
+
+/// Defaults for newly-created vaults. Tracks the RFC 9106 baseline:
+/// 64 MiB memory, 3 iterations, 4 lanes — roughly 100 ms on a modern
+/// laptop and a steep wall against brute-force on a stolen vault.
+pub const DEFAULT_PARAMS: KdfParams = KdfParams::new(64 * 1024, 3, 4);
+
+/// Cost parameters that the original `DAXVLT01` files were written
+/// with. Kept here so existing vaults keep decrypting after the
+/// defaults are tightened. Not used for new writes.
+pub const LEGACY_V1_PARAMS: KdfParams = KdfParams::new(19 * 1024, 2, 1);
+
 /// Derive a 32-byte key from a passphrase using Argon2id.
-///
-/// Parameters track the RFC 9106 baseline for second-recommended
-/// option (data-independent memory access is irrelevant for our
-/// threat model, but cost matters): 64 MiB of memory, 3 iterations,
-/// 4 lanes of parallelism. ~100 ms on a modern laptop, hard to
-/// brute-force even with a stolen vault.
-pub fn derive_key(passphrase: &[u8], salt: &[u8]) -> StoreResult<[u8; KEY_LEN]> {
-    let params = Params::new(64 * 1024, 3, 4, Some(KEY_LEN))
-        .map_err(|e| StoreError::KeyDerivation(e.to_string()))?;
-    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+pub fn derive_key(passphrase: &[u8], salt: &[u8], params: KdfParams) -> StoreResult<[u8; KEY_LEN]> {
+    let argon_params = Params::new(
+        params.m_cost_kib,
+        params.t_cost,
+        params.p_cost,
+        Some(KEY_LEN),
+    )
+    .map_err(|e| StoreError::KeyDerivation(e.to_string()))?;
+    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut key = [0u8; KEY_LEN];
     argon
         .hash_password_into(passphrase, salt, &mut key)
