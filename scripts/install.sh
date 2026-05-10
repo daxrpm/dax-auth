@@ -57,8 +57,13 @@ abort() {
     exit 1
 }
 
-# shellcheck disable=SC2154  # rc is assigned inside the trap body
-trap 'rc=$?; if [[ $rc -ne 0 ]]; then printf "\n%s✗ failed at line %s with exit %s%s\n" "$RED$BOLD" "$LINENO" "$rc" "$RESET" >&2; printf "  see %s\n" "$LOG_FILE" >&2; fi' EXIT
+on_err() {
+    local rc=$?
+    printf "\n%s✗ command failed at line %s: %s (exit %s)%s\n" \
+        "$RED$BOLD" "${BASH_LINENO[0]}" "$BASH_COMMAND" "$rc" "$RESET" >&2
+    printf "  see %s\n" "$LOG_FILE" >&2
+}
+trap on_err ERR
 
 ask() {
     # ask "Question?" "default"
