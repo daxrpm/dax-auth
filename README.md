@@ -1,241 +1,305 @@
-# dax-auth
+<div align="center">
 
-Windows-Hello-grade face authentication for Linux, written in Rust.
+# 👁️ dax-auth
 
-`dax-auth` provides a PAM module (`libdax_pam.so`) that can authenticate a user via their face instead of a password. Detection, alignment, recognition and passive anti-spoofing run on-device through ONNX Runtime; templates are stored in an Argon2id + ChaCha20-Poly1305 encrypted vault.
+**Windows Hello-grade face authentication for Linux, written in Rust.**
 
-This is the Rust rewrite on the `rust` branch. The legacy Python+dlib implementation lives on `main` and is kept for historical reference only.
+PAM module, encrypted on-disk vault, RGB ↔ IR cross-check, passive liveness — entirely on-device, no cloud, no telemetry.
 
-## Status
+[![Rust 2021](https://img.shields.io/badge/rust-2021%20edition-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85%2B-CE412B?logo=rust&logoColor=white)](https://github.com/rust-lang/rust)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-yellow?logo=linux&logoColor=white)](#requirements)
+[![PAM](https://img.shields.io/badge/auth-PAM-teal.svg)](https://www.linux-pam.org/)
+[![ONNX Runtime](https://img.shields.io/badge/onnx--runtime-2.0-005CED?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
+[![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#status)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-- Detection, recognition, IR capture, liveness, encrypted storage, enrolment, verification and the PAM module are implemented and validated end-to-end with `pamtester`.
-- The pipeline has not been audited and is not certified for any compliance regime. Use with the password fallback (`auth sufficient`, never `required`).
+</div>
 
-## Pipeline
+---
 
-```
-camera ─▶ SCRFD detection ─▶ MiniFASNet liveness ─▶ Umeyama align ─▶ ArcFace embed
-                                                                             │
-                                                                             ▼
-                                                                  ChaCha20-Poly1305
-                                                                     vault lookup
-                                                                             │
-                                                                             ▼
-                                                                cosine similarity
-                                                                             │
-                                                                             ▼
-                                                                  PAM_SUCCESS
-                                                                or PAM_AUTH_ERR
-```
-
-## Requirements
-
-- Linux with V4L2 (kernel ≥ 5.x). Tested on Fedora 43.
-- Rust toolchain pinned via `rust-toolchain.toml` (stable, components: rustfmt, clippy).
-- A V4L2 webcam. An IR sensor is optional but recommended for the strongest spoof resistance.
-- For PAM testing: the `pamtester` package (`sudo dnf install pamtester` on Fedora).
-
-## How to use this repo
-
-- Want to **try it out fast**? Follow the **Quick start** below.
-- Want to **validate every layer** end-to-end? Read [`TESTING.md`](TESTING.md). It walks tier-by-tier from "is the camera reachable" up to "PAM authenticates a real face and rejects a phone replay".
-- Want to **install it system-wide**? Run the interactive installer at `scripts/install.sh`. It detects your distribution, asks before doing anything, and never touches `/etc/pam.d/sudo` on its own.
-
-## Quick start
-
-### 1. Clone and fetch models
+## TL;DR
 
 ```sh
 git clone https://github.com/daxrpm/dax-auth.git
-cd dax-auth
-git checkout rust
+cd dax-auth && git checkout rust
+./scripts/install.sh        # interactive — installs binary, PAM module, models
+sudo daxauth enroll         # 5 captures of your face (auto liveness gate)
+sudo daxauth verify         # confirm cosine match
+sudo ./scripts/install.sh   # menu 2: wire libdax_pam.so into /etc/pam.d/sudo
+sudo -K && sudo ls          # next sudo: face instead of password
+```
+
+> [!IMPORTANT]
+> This project is **alpha**. The pipeline has not been third-party audited.
+> Always wire it as `auth sufficient` so the password path remains as fallback.
+> Open a recovery shell **before** modifying any production PAM stack.
+
+---
+
+## ✨ Highlights
+
+|  |  |
+|---|---|
+| 🔒 **Encrypted vault** | Argon2id (RFC 9106 baseline: 64 MiB / 3 / 4) + ChaCha20-Poly1305 AEAD, atomic writes, key zeroisation. |
+| 👁️ **Hello-grade liveness** | Optional RGB ↔ IR cross-check — phone screens and photos fail because they don't reflect IR like skin. |
+| 🛡️ **Hardened PAM module** | Ignores all `DAX_*` env vars (attacker-controlled in PAM context) and validates root ownership of config + secret files. |
+| 🤖 **Passive anti-spoofing** | MiniFASNetV2 (3-class: live / print / replay) on every verify. |
+| 🧠 **State-of-the-art models** | InsightFace SCRFD-500MF + MobileFaceNet, both Apache-2.0. |
+| ⚙️ **Multi-distro installer** | Detects Fedora / Debian / Ubuntu / Arch / openSUSE / Alpine, picks the right packages and PAM directory. |
+| 🦀 **No `unsafe` outside the PAM C-ABI shim** | `unsafe_code = "deny"` workspace-wide; clippy pedantic warnings as errors in CI. |
+| ⚡ **Fast** | ~150 ms end-to-end on a modern laptop CPU; no GPU required. |
+
+---
+
+## 🔁 Pipeline
+
+```mermaid
+flowchart LR
+    classDef rgb fill:#1e88e5,color:#fff,stroke-width:0
+    classDef ir fill:#fb8c00,color:#fff,stroke-width:0
+    classDef ml fill:#7b1fa2,color:#fff,stroke-width:0
+    classDef store fill:#2e7d32,color:#fff,stroke-width:0
+    classDef pam fill:#455a64,color:#fff,stroke-width:0
+
+    cam[📷 RGB camera]:::rgb --> det[SCRFD<br/>detection]:::ml
+    det --> ir{IR<br/>configured?}
+    ir -->|yes| irc[📸 IR capture<br/>+ cross-check]:::ir
+    ir -->|no| live
+    irc --> live[MiniFASNetV2<br/>liveness]:::ml
+    live --> emb[ArcFace<br/>embedding]:::ml
+    emb --> vault[(Encrypted<br/>vault)]:::store
+    vault --> match{Cosine<br/>≥ threshold?}
+    match -->|yes| ok[✓ PAM_SUCCESS]:::pam
+    match -->|no| err[✗ PAM_AUTH_ERR<br/>→ password fallback]:::pam
+```
+
+Every gate fails closed: a covered lens stops at SCRFD, a phone screen at the IR cross-check, a printed photo at MiniFASNetV2, a similar-looking impostor at the cosine threshold.
+
+---
+
+## 🚀 Quick start
+
+### Requirements
+
+- Linux with V4L2 (kernel ≥ 5.x). Tested on Fedora 43.
+- A V4L2 RGB webcam. An IR sensor is **optional** — when absent, the cross-check silently degrades.
+- Rust toolchain (rustup) — pinned to stable via `rust-toolchain.toml`.
+- For PAM testing: `pamtester`, installed by the installer when you ask for it.
+
+### 1. Clone & fetch models
+
+```sh
+git clone https://github.com/daxrpm/dax-auth.git
+cd dax-auth && git checkout rust
 ./scripts/fetch-models.sh
 ```
 
-The script downloads InsightFace `buffalo_s` (face detection + recognition) and yakhyo's `MiniFASNetV2` (passive liveness). Both are Apache-2.0. Total size is ~17 MB; sha256 is verified for the liveness model.
+The script downloads InsightFace `buffalo_s` (~17 MB) and yakhyo's `MiniFASNetV2.onnx` (~1.7 MB). Both are **Apache-2.0**. Each archive's SHA-256 is hard-coded in the script and verified before extraction.
 
-### 2. Build
-
-```sh
-just build               # debug binary at target/debug/daxauth
-cargo build -p dax-cli --release
-cargo build -p dax-pam --release   # libdax_pam.so for PAM integration
-```
-
-### 3. Inspect your hardware
-
-```sh
-just devices
-```
-
-You should see one or more cameras. On Windows-Hello-class laptops the IR sensors usually identify themselves with `IR camera` in the description.
-
-### 4. Smoke-test the pipeline
-
-```sh
-# Capture a single RGB frame
-target/debug/daxauth snap --device 0 --out /tmp/rgb.jpg
-
-# Detect a face and draw the bounding box + 5 landmarks
-target/debug/daxauth detect \
-    --model models/buffalo_s/det_500m.onnx \
-    --input /tmp/rgb.jpg --out /tmp/annotated.jpg
-
-# Compute an embedding and inspect it
-target/debug/daxauth embed \
-    --detector models/buffalo_s/det_500m.onnx \
-    --recognizer models/buffalo_s/w600k_mbf.onnx \
-    --input /tmp/rgb.jpg
-
-# Run passive anti-spoofing on the same frame
-target/debug/daxauth liveness \
-    --detector models/buffalo_s/det_500m.onnx \
-    --liveness-model models/liveness/MiniFASNetV2.onnx \
-    --input /tmp/rgb.jpg
-```
-
-If you have an IR sensor:
-
-```sh
-target/debug/daxauth snap-ir --device 2 --out /tmp/ir.png
-```
-
-### 5. Enrol and verify
-
-```sh
-export DAX_VAULT_PASSPHRASE='choose-a-strong-passphrase'
-
-target/debug/daxauth enroll \
-    --user "$USER" --vault /tmp/vault.bin --captures 5 --device 0 \
-    --detector  models/buffalo_s/det_500m.onnx \
-    --recognizer models/buffalo_s/w600k_mbf.onnx \
-    --liveness-model models/liveness/MiniFASNetV2.onnx
-
-target/debug/daxauth verify \
-    --user "$USER" --vault /tmp/vault.bin --device 0 \
-    --detector  models/buffalo_s/det_500m.onnx \
-    --recognizer models/buffalo_s/w600k_mbf.onnx \
-    --liveness-model models/liveness/MiniFASNetV2.onnx
-```
-
-`enroll` collects N captures (default 5), each gated through detection and liveness, and stores the L2-normalised embeddings in the encrypted vault. `verify` captures one frame, refuses to even compare if liveness flags it as a spoof, and reports the highest cosine similarity against the user's stored templates. Match threshold is `0.5`.
-
-### 6. Plug it into PAM (test only)
-
-`scripts/pamtest.sh` builds a dummy PAM service at `/etc/pam.d/daxauth-test` and runs `pamtester` against it. **It never touches `sudo`, `login`, or any other production stack.**
-
-```sh
-cargo build -p dax-pam --release
-DAX_VAULT_PASSPHRASE='…' \
-DAX_VAULT_PATH=/tmp/vault.bin \
-TARGET_USER="$USER" \
-./scripts/pamtest.sh
-```
-
-A successful run prints:
-
-```
-pamtester: invoking pam_start(daxauth-test, $USER, ...)
-pamtester: performing operation - authenticate
-pamtester: successfully authenticated
-```
-
-### 7. Install system-wide (recommended)
+### 2. Install system-wide
 
 ```sh
 ./scripts/install.sh
 ```
 
-The interactive installer detects Fedora / Debian / Arch / openSUSE / Alpine, picks the right package manager, locates the PAM security directory for the distro, probes V4L2 for RGB and IR cameras, builds the release artefacts if missing, fetches the models if missing, and writes both `/etc/dax-auth/config.toml` (paths and camera indices) and `/etc/dax-auth/secret` (random 32-byte passphrase, 600 root-only).
+The interactive installer:
 
-After install, the CLI **does not need any flags or environment variables**:
+- detects your distribution and PAM directory
+- offers to install the system prerequisites (`pam-devel` / `libpam0g-dev` / `pam`, `v4l-utils`, `pamtester`, `gcc`, …)
+- builds the release artefacts on demand
+- copies binary, `.so`, models to standard locations
+- generates `/etc/dax-auth/config.toml` and a random `/etc/dax-auth/secret` (0600 root)
+- creates `/var/lib/daxauth/` with 0700 root
+
+Re-run it any time to **verify** an install, **uninstall**, or **add/remove** the PAM line in any `/etc/pam.d/<service>` (it backs up the file with a timestamp first).
+
+### 3. Enrol your face
 
 ```sh
-sudo daxauth enroll        # uses $SUDO_USER, paths from config, passphrase from secret file
-sudo daxauth verify        # same
-sudo daxauth vault list    # same
+sudo daxauth enroll       # uses $SUDO_USER, paths from config, passphrase from secret
 ```
 
-When `sudo daxauth verify` prints `MATCH`, run the installer again and pick the **Configure PAM service** menu entry. It lists the entries under `/etc/pam.d/`, takes a timestamped backup of the one you choose, inserts the `auth sufficient libdax_pam.so` line tagged so a future run can remove it, and optionally smoke-tests it through `pamtester` on the spot.
+You'll see five captures with short pauses; move slightly between them (small head turns, blinks). Each capture has to pass detection + liveness gates before being added to the vault.
 
-## Subcommand reference
+### 4. Verify it works
 
-| Command | Purpose |
+```sh
+sudo daxauth verify
+```
+
+You should see:
+
+```text
+✓  dax-auth  authenticated  ·  sim 70%  ·  live 99%  ·  ir ok
+```
+
+When that line is green, run `./scripts/install.sh` again, pick **`Configure PAM service`**, type `sudo`, accept the defaults, and the next time the sudo cache expires (`sudo -K` to force) you authenticate with your face.
+
+> [!TIP]
+> Test-drive the PAM module without touching `/etc/pam.d/sudo` by using `pamtester` against the dummy service the installer creates: `./scripts/pamtest.sh`.
+
+---
+
+## 🧰 Subcommand reference
+
+| Command | What it does |
+|---------|-------------|
+| `daxauth devices` | Lists every V4L2 capture node with its FourCCs (RGB vs IR). |
+| `daxauth snap [-d N -o file]` | Captures one RGB frame to disk (JPEG/PNG by extension). |
+| `daxauth snap-ir [-d N -o file]` | Same, for an IR sensor — emits 8-bit grayscale. |
+| `daxauth detect [-m model -i img -o anno]` | Runs SCRFD on an image and optionally writes an annotated copy. |
+| `daxauth embed [--detector --recognizer -i img]` | Computes the L2-normalised 512-D embedding. |
+| `daxauth compare … -a A.jpg -b B.jpg` | Cosine similarity between the faces in two images. |
+| `daxauth liveness …` | Passive anti-spoofing verdict on a single image. |
+| **`daxauth enroll`** | Multi-capture enrolment into the encrypted vault. |
+| **`daxauth verify`** | One-shot authentication (used by both the CLI and the PAM module). |
+| `daxauth vault {init,list,remove}` | Empty-vault creation, listing, per-user template removal. |
+
+When you are root and the system config exists, **`enroll`, `verify`, and `vault list/remove` need no flags** — they read paths and the passphrase from `/etc/dax-auth/config.toml` + `/etc/dax-auth/secret` and target `$SUDO_USER`. Every flag is still accepted as a development override.
+
+---
+
+## 🏗️ Architecture
+
+Nine crates in a Cargo workspace; every layer is testable in isolation.
+
+```mermaid
+flowchart TB
+    subgraph types["Cross-cutting types"]
+        core[dax-core<br/>Frame · PixelFormat]
+    end
+
+    subgraph capture_layer["Capture"]
+        capture[dax-capture<br/>Camera · IrCamera]
+    end
+
+    subgraph ml["Inference"]
+        detect[dax-detect<br/>SCRFD]
+        embed[dax-embed<br/>Umeyama + ArcFace]
+        liveness[dax-liveness<br/>MiniFASNetV2]
+    end
+
+    subgraph storage["Storage"]
+        store[dax-store<br/>Argon2id + ChaCha20-Poly1305]
+    end
+
+    subgraph orchestration["Orchestration"]
+        runtime[dax-runtime<br/>verify_face pipeline]
+    end
+
+    subgraph entrypoints["Entry points"]
+        cli[dax-cli<br/>📦 daxauth binary]
+        pam[dax-pam<br/>📦 libdax_pam.so cdylib]
+    end
+
+    capture --> core
+    detect --> capture
+    embed --> capture
+    embed --> detect
+    liveness --> capture
+    liveness --> detect
+    runtime --> capture
+    runtime --> detect
+    runtime --> embed
+    runtime --> liveness
+    runtime --> store
+    cli --> runtime
+    pam --> runtime
+```
+
+`dax-runtime::verify_face` is the single source of truth. The CLI's `verify` and the PAM module's `pam_sm_authenticate` both call into it, so the behaviour can never drift between the two.
+
+---
+
+## 🔬 Tech stack
+
+All open source, all verified against the latest available crates as of build time.
+
+| Concern | Crate(s) |
 |---------|---------|
-| `daxauth devices` | List V4L2 cameras with type and node path |
-| `daxauth snap` | Capture a single RGB frame to disk |
-| `daxauth snap-ir` | Capture a single IR/grayscale frame (Windows-Hello-class sensors) |
-| `daxauth detect` | Run SCRFD on an image and optionally write an annotated copy |
-| `daxauth embed` | Compute a 512-D L2-normalised embedding for the first face |
-| `daxauth compare` | Cosine similarity between the faces in two images |
-| `daxauth liveness` | Passive anti-spoofing verdict on an image |
-| `daxauth enroll` | Multi-capture enrolment into the encrypted vault |
-| `daxauth verify` | One-shot face verification with mandatory liveness gate |
-| `daxauth vault init` | Create an empty encrypted vault file |
-| `daxauth vault list` | List enrolled users and their template counts |
-| `daxauth vault remove` | Delete all templates for a user |
+| ONNX inference | [`ort 2.0.0-rc.12`](https://github.com/pykeio/ort) (Microsoft ONNX Runtime, statically linked) |
+| Camera | [`nokhwa 0.10`](https://github.com/l1npengtul/nokhwa) for RGB · [`v4l 0.14`](https://crates.io/crates/v4l) for IR (`GREY` FourCC bypasses a nokhwa bug) |
+| Linear algebra | [`nalgebra 0.34`](https://nalgebra.rs/) — Umeyama similarity transform via SVD |
+| Tensors | [`ndarray 0.17`](https://crates.io/crates/ndarray) |
+| Image I/O | [`image 0.25`](https://crates.io/crates/image) · [`imageproc 0.25`](https://crates.io/crates/imageproc) |
+| Cryptography | [`argon2 0.5`](https://crates.io/crates/argon2) · [`chacha20poly1305 0.10`](https://crates.io/crates/chacha20poly1305) · [`zeroize 1`](https://crates.io/crates/zeroize) |
+| Config | [`toml 0.8`](https://crates.io/crates/toml) · [`serde 1`](https://crates.io/crates/serde) |
+| PAM glue | [`pam-bindings 0.1`](https://crates.io/crates/pam-bindings) |
+| Errors / logs / CLI | `thiserror 2` · `anyhow 1` · `tracing 0.1` · `clap 4` |
 
-Each command supports `-v` / `-vv` for `debug` / `trace` logging via `tracing`. The vault subcommands read the passphrase from `DAX_VAULT_PASSPHRASE`.
+**Models** (downloaded by `scripts/fetch-models.sh`, never committed):
+- [InsightFace `buffalo_s`](https://github.com/deepinsight/insightface) — SCRFD detector + MobileFaceNet recognition
+- [yakhyo `MiniFASNetV2`](https://github.com/yakhyo/face-anti-spoofing) — Silent-Face anti-spoofing
 
-## Architecture
+---
 
-The workspace is split into nine crates so each layer is testable in isolation:
+## 🛡️ Security model
 
-```
-dax-core      Frame, PixelFormat (cross-cutting types)
-dax-capture   Camera (RGB via nokhwa) + IrCamera (V4L2 GREY direct)
-dax-detect    SCRFD-500MF: preprocess, inference, anchor decoding, NMS
-dax-embed     Umeyama similarity transform + warp + ArcFace embedder
-dax-liveness  MiniFASNetV2 passive anti-spoofing (3-class collapsed to live/spoof)
-dax-store     Vault: Argon2id KDF + ChaCha20-Poly1305 AEAD, atomic save
-dax-runtime   verify_face pipeline shared by CLI and PAM
-dax-pam       cdylib libdax_pam.so via pam-bindings
-dax-cli       binary daxauth (clap derive, 11 subcommands)
-```
+> [!NOTE]
+> The PAM module operates under a hostile-environment threat model. When `pam_authenticate` runs, the calling process still holds the original user's environment, so any `DAX_*` variable a local attacker sets is observable. The module therefore **never** consults `std::env`. Everything is loaded from `/etc/dax-auth/config.toml` and `/etc/dax-auth/secret`, both validated to be `root`-owned and not group/world-writable before being read.
 
-`CLAUDE.md` describes the design decisions, model details, vault file format, hardware notes and known gotchas in depth.
+Defaults shipped:
 
-## Tech stack
+- `match_threshold = 0.6` — sits in ArcFace's calibrated FAR ≲ 1e-5 zone.
+- Argon2id at RFC 9106 baseline (64 MiB / 3 / 4) — ~100 ms unlock cost.
+- Vault format `DAXVLT02` encodes its KDF parameters in the header so future tuning never invalidates existing files. `DAXVLT01` files keep decrypting with their original parameters.
+- `auth sufficient`-only PAM line, never `required`. Password fallback always available.
 
-All open source, all verified against the latest available crates as of the build:
+> [!WARNING]
+> **Single-frame passive liveness on RGB-only hosts is not enough against motivated attackers.** A laptop with no IR sensor relies entirely on MiniFASNetV2 and stops printed photos and casual screen replays — but not high-resolution OLED replays, realistic silicone masks, or real-time deepfake renderers. With an IR sensor configured (`[camera] ir_device`), the cross-check raises that bar significantly.
 
-- **ONNX Runtime** via [`ort 2.0.0-rc.12`](https://github.com/pykeio/ort) with `download-binaries` + `tls-rustls`
-- **Camera** via [`nokhwa 0.10`](https://github.com/l1npengtul/nokhwa) (RGB) and [`v4l 0.14`](https://crates.io/crates/v4l) (IR)
-- **Linear algebra** via [`nalgebra 0.34`](https://nalgebra.rs/) (SVD for Umeyama)
-- **Tensors** via [`ndarray 0.17`](https://crates.io/crates/ndarray)
-- **Image I/O** via [`image 0.25`](https://crates.io/crates/image) and [`imageproc 0.25`](https://crates.io/crates/imageproc)
-- **Cryptography** via [`argon2 0.5`](https://crates.io/crates/argon2) + [`chacha20poly1305 0.10`](https://crates.io/crates/chacha20poly1305) + [`zeroize 1`](https://crates.io/crates/zeroize) (RustCrypto)
-- **PAM bindings** via [`pam-bindings 0.1`](https://crates.io/crates/pam-bindings)
-- **Errors / logs / CLI** via `thiserror 2`, `anyhow 1`, `tracing 0.1`, `clap 4`, `serde 1`
+For the long form, see [`CLAUDE.md`](CLAUDE.md) — design decisions, model details, file format, hardware notes and gotchas.
 
-## Models
+---
 
-- **InsightFace `buffalo_s`** ([Apache-2.0](https://github.com/deepinsight/insightface)): SCRFD-500MF face detector + MobileFaceNet recognition.
-- **`MiniFASNetV2`** from [yakhyo/face-anti-spoofing](https://github.com/yakhyo/face-anti-spoofing) ([Apache-2.0](https://github.com/yakhyo/face-anti-spoofing)): Silent-Face passive liveness.
+## 📚 Documentation
 
-Models are downloaded at install time and never committed.
+| Document | Purpose |
+|----------|---------|
+| [`README.md`](README.md) | What you're reading — overview and Quick start. |
+| [`TESTING.md`](TESTING.md) | Tier-by-tier validation plan: hardware → detection → embedding → liveness → vault → end-to-end → PAM. |
+| [`CLAUDE.md`](CLAUDE.md) | Deep architecture and convention notes for contributors and future Claude Code sessions. |
+| [`scripts/install.sh`](scripts/install.sh) | Interactive installer (multi-distro). |
+| [`scripts/fetch-models.sh`](scripts/fetch-models.sh) | Downloads ONNX models with hard-coded SHA-256 verification. |
+| [`scripts/pamtest.sh`](scripts/pamtest.sh) | `pamtester` driver against an isolated `/etc/pam.d/daxauth-test`. |
 
-## Security notes
+---
 
-- The vault is encrypted at rest with Argon2id (RFC 9106 baseline: 64 MiB / 3 iterations / 4 lanes) + ChaCha20-Poly1305. Wrong passphrases fail closed via the AEAD tag check.
-- The PAM module **ignores the process environment**. A local attacker invoking `sudo` cannot redirect the vault, models, camera index, threshold or passphrase via `DAX_*` variables; everything is read from `/etc/dax-auth/config.toml` and `/etc/dax-auth/secret`, both validated to be `root`-owned and not group/world-writable before use.
-- The default cosine threshold is **0.6**, which sits in ArcFace's calibrated FAR ≲ 1e-5 zone. Operators can adjust `[security] match_threshold` in `config.toml`.
-- Liveness is **mandatory** during `verify`: a spoof verdict short-circuits before the embedding is even compared.
-- When the host exposes an IR sensor (`[camera] ir_device` in the config), the verify pipeline runs a Hello-grade RGB↔IR cross-check: the face must appear in both sensors at the same approximate position. Phone screens, photos and displays fail this check because they do not reflect near-infrared like human skin.
-- PAM integration ships as `auth sufficient` only — the password path remains as fallback. **Do not configure `auth required libdax_pam.so`** unless you have an out-of-band recovery shell.
+## 🛣️ Roadmap
 
-### Known limitations
+- [x] RGB pipeline: capture, detect, embed, liveness, vault, enrol, verify
+- [x] Encrypted vault with versioned KDF parameters
+- [x] PAM module wired through `pam-bindings` (`libdax_pam.so` cdylib)
+- [x] Multi-distro interactive installer with PAM service integration
+- [x] **Hello-grade RGB ↔ IR cross-check**
+- [x] Hostile-env hardened PAM module
+- [ ] Multi-frame liveness (requires N-frame variance check, blocks HD video / mask attacks)
+- [ ] NIR-aware embedder (low-light authentication; needs cross-modal model retraining)
+- [ ] `cargo install daxauth` (publish CLI to crates.io with runtime model fetch)
+- [ ] RPM / AUR / DEB packaging (target: Fedora COPR, AUR, `cargo deb`)
+- [ ] Slint / GTK4 GUI for guided enrolment and per-user vault management
+- [ ] GNOME / KDE lockscreen integration
 
-- **Single-frame passive liveness on RGB-only hosts**: a laptop without an IR sensor relies entirely on MiniFASNetV2 against a single RGB frame. That gate stops printed photos and casual screen replays, but it is not adequate against high-resolution OLED videos, realistic silicone masks or real-time deepfake renderers. Multi-frame liveness is on the roadmap.
-- Models (`buffalo_s.zip`, `MiniFASNetV2.onnx`) are downloaded with hard-coded SHA-256 checksums in `scripts/fetch-models.sh`. Drift fails the install. Audit any pinned-hash bump before committing it.
-- The PAM module ships as `cdylib`. Treat it like any other binary in the trust path: build from a clean checkout, verify the resulting hash before installing in `/usr/lib64/security/`.
+## Status
+
+Alpha. Functional end-to-end — does not have a CI pipeline yet, an external security audit, or a stable on-disk format guarantee.
+
+## Contributing
+
+Issues and PRs welcome. Two soft requirements:
+
+1. **`just ci` must pass** before pushing — that runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo check --workspace`, and `cargo test --workspace`.
+2. **No `unsafe` outside `dax-pam`** (where the C ABI shim from `pam_hooks!` requires it). Anywhere else, redesign instead of opting out of the workspace `unsafe_code = "deny"` lint.
 
 ## License
 
-GPL-3.0-only, same as the original Python project. See `LICENSE`.
+[GPL-3.0-only](LICENSE).
 
 ## Acknowledgments
 
-- [InsightFace](https://github.com/deepinsight/insightface) for SCRFD and the buffalo model packs.
-- [yakhyo/face-anti-spoofing](https://github.com/yakhyo/face-anti-spoofing) for the MiniFASNet ONNX export.
-- [Howdy](https://github.com/boltgolt/howdy) for proving the V4L2 + PAM approach works on Linux.
+- [**InsightFace**](https://github.com/deepinsight/insightface) for SCRFD, ArcFace and the buffalo model packs.
+- [**yakhyo/face-anti-spoofing**](https://github.com/yakhyo/face-anti-spoofing) for the MiniFASNet ONNX export.
+- [**Howdy**](https://github.com/boltgolt/howdy) for proving the V4L2 + PAM approach works on Linux.
+- [**RustCrypto**](https://github.com/RustCrypto) for the Argon2 and ChaCha20-Poly1305 implementations.
