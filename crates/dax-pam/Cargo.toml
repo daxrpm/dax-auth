@@ -18,5 +18,3 @@ workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 dax-runtime.workspace = true
 pam-bindings.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true

@@ -6,10 +6,11 @@
 //! the actual face-recognition pipeline lives in `dax-runtime` so
 //! the CLI and PAM share a single implementation.
 //!
-//! All filesystem paths and the vault passphrase are read from
-//! environment variables to keep `PoC` integration simple — production
-//! installs would hard-code them at build time or read a config in
-//! `/etc/dax-auth/`.
+//! Output policy: this module is intentionally silent on the TTY.
+//! When auth succeeds we return `PAM_SUCCESS` and the user proceeds
+//! without any message. When auth fails we return `PAM_AUTH_ERR`,
+//! and the calling stack (sudo, login, …) takes over with its own
+//! prompt — typically the password fallback.
 
 #![cfg(target_os = "linux")]
 #![allow(unsafe_code)] // Required for the C ABI shim emitted by pam_hooks!.
@@ -17,11 +18,10 @@
 use std::ffi::CStr;
 use std::path::PathBuf;
 
-use dax_runtime::{verify_face, Config, VerifyConfig};
+use dax_runtime::{Config, VerifyConfig, verify_face};
 use pam::constants::{PamFlag, PamResultCode};
 use pam::items::User;
 use pam::module::{PamHandle, PamHooks};
-use tracing::{error, info, warn};
 
 const ENV_VAULT: &str = "DAX_VAULT_PATH";
 const ENV_PASSPHRASE: &str = "DAX_VAULT_PASSPHRASE";
@@ -42,35 +42,14 @@ pam::pam_hooks!(DaxPam);
 
 impl PamHooks for DaxPam {
     fn sm_authenticate(pamh: &mut PamHandle, _args: Vec<&CStr>, _flags: PamFlag) -> PamResultCode {
-        // Loud breadcrumbs to stderr — these always reach the TTY of
-        // whatever loaded us (sudo, login, pamtester) so we can tell
-        // from the user's terminal whether our hook ran at all.
-        eprintln!("[dax-pam] sm_authenticate entered");
-        init_logging();
-
         let user = match resolve_pam_user(pamh) {
-            Ok(u) => {
-                eprintln!("[dax-pam] target user = {u}");
-                u
-            }
-            Err(e) => {
-                eprintln!("[dax-pam] could not resolve PAM user: {e:?}");
-                return e;
-            }
+            Ok(u) => u,
+            Err(code) => return code,
         };
         let env = match read_env() {
             Ok(env) => env,
-            Err(missing) => {
-                eprintln!("[dax-pam] config error: {missing}");
-                error!("dax-pam: missing required configuration: {missing}");
-                return PamResultCode::PAM_AUTH_ERR;
-            }
+            Err(_) => return PamResultCode::PAM_AUTH_ERR,
         };
-        eprintln!(
-            "[dax-pam] config ok, vault={} detector={}",
-            env.vault.display(),
-            env.detector.display()
-        );
 
         let config = VerifyConfig {
             user: &user,
@@ -83,50 +62,13 @@ impl PamHooks for DaxPam {
             match_threshold: dax_runtime::DEFAULT_MATCH_THRESHOLD,
         };
 
-        eprintln!("[dax-pam] running verify_face …");
         match verify_face(&config) {
-            Ok(outcome) if outcome.matched => {
-                eprintln!(
-                    "[dax-pam] MATCH cosine={:.4} real={:.4}",
-                    outcome.best_cosine, outcome.liveness_real
-                );
-                info!(
-                    user = %user,
-                    cosine = outcome.best_cosine,
-                    real = outcome.liveness_real,
-                    "dax-pam: authenticated"
-                );
-                PamResultCode::PAM_SUCCESS
-            }
-            Ok(outcome) => {
-                eprintln!(
-                    "[dax-pam] REJECT reason={:?} cosine={:.4} real={:.4} spoof={:.4}",
-                    outcome.reason,
-                    outcome.best_cosine,
-                    outcome.liveness_real,
-                    outcome.liveness_spoof
-                );
-                warn!(
-                    user = %user,
-                    cosine = outcome.best_cosine,
-                    real = outcome.liveness_real,
-                    spoof = outcome.liveness_spoof,
-                    reason = ?outcome.reason,
-                    "dax-pam: rejected"
-                );
-                PamResultCode::PAM_AUTH_ERR
-            }
-            Err(err) => {
-                eprintln!("[dax-pam] pipeline error: {err}");
-                error!(user = %user, error = %err, "dax-pam: pipeline error");
-                PamResultCode::PAM_AUTH_ERR
-            }
+            Ok(outcome) if outcome.matched => PamResultCode::PAM_SUCCESS,
+            _ => PamResultCode::PAM_AUTH_ERR,
         }
     }
 
     fn sm_setcred(_pamh: &mut PamHandle, _args: Vec<&CStr>, _flags: PamFlag) -> PamResultCode {
-        // We do not manage credentials beyond the authentication
-        // decision itself; PAM still expects this hook to exist.
         PamResultCode::PAM_SUCCESS
     }
 
@@ -145,8 +87,6 @@ struct PamEnv {
 }
 
 fn read_env() -> Result<PamEnv, String> {
-    // 1. Prefer environment variables when present (developer flow,
-    //    pamtester runs).
     let env_vault = std::env::var(ENV_VAULT).ok();
     let env_passphrase = std::env::var(ENV_PASSPHRASE).ok();
     let env_detector = std::env::var(ENV_DETECTOR).ok();
@@ -156,8 +96,6 @@ fn read_env() -> Result<PamEnv, String> {
         .ok()
         .and_then(|s| s.parse::<u32>().ok());
 
-    // 2. Fall back to the system config so an installed system
-    //    works without callers exporting DAX_* vars.
     let config = Config::load_system().ok().flatten();
     let secret = std::fs::read_to_string(SECRET_FILE)
         .ok()
@@ -199,9 +137,8 @@ fn read_env() -> Result<PamEnv, String> {
 /// Read the PAM user, working around `pam-bindings 0.1.1`'s
 /// `get_user` which returns `Err(PAM_SUCCESS)` on the happy path
 /// because of a `*const *mut`/`*mut *const` mismatch in the FFI
-/// glue. We fall back to `get_item::<User>()`, whose pointer
-/// plumbing is correct, and convert the C-string into an owned
-/// `String` we can pass into `dax-runtime`.
+/// glue. `get_item::<User>()` uses `&mut ptr` correctly, so the
+/// username comes through.
 fn resolve_pam_user(pamh: &mut PamHandle) -> Result<String, PamResultCode> {
     if let Ok(u) = pamh.get_user(None) {
         if !u.is_empty() {
@@ -218,16 +155,4 @@ fn resolve_pam_user(pamh: &mut PamHandle) -> Result<String, PamResultCode> {
         Err(PamResultCode::PAM_SUCCESS) => Err(PamResultCode::PAM_AUTH_ERR),
         Err(other) => Err(other),
     }
-}
-
-fn init_logging() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_target(false)
-            .compact()
-            .try_init();
-    });
 }
