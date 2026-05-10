@@ -29,6 +29,9 @@ pub struct Resolved {
     /// `[camera] ir_device = N` in `/etc/dax-auth/config.toml`. The
     /// pipeline uses it for the Hello-style RGB↔IR cross-check.
     pub ir_camera_index: Option<u32>,
+    /// Cosine threshold from `[security] match_threshold` in the
+    /// config, falling back to the runtime default.
+    pub match_threshold: f32,
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +73,11 @@ pub fn resolve(overrides: Overrides<'_>) -> Result<Resolved> {
         .or_else(|| config.as_ref().map(|c| c.camera.rgb_device))
         .unwrap_or(0);
     let ir_camera_index = config.as_ref().and_then(|c| c.camera.ir_device);
+    let match_threshold = config
+        .as_ref()
+        .map_or(dax_runtime::DEFAULT_MATCH_THRESHOLD, |c| {
+            c.security.match_threshold
+        });
 
     let passphrase = read_passphrase()?;
 
@@ -81,6 +89,7 @@ pub fn resolve(overrides: Overrides<'_>) -> Result<Resolved> {
         liveness,
         camera_index,
         ir_camera_index,
+        match_threshold,
     })
 }
 

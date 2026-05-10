@@ -6,35 +6,37 @@
 //! the actual face-recognition pipeline lives in `dax-runtime` so
 //! the CLI and PAM share a single implementation.
 //!
-//! Output policy: a single status line on the calling TTY, coloured
-//! when the destination is interactive. Successful auths print
-//! something like `✓  authenticated  ·  sim 70%  ·  live 99%`;
-//! rejections print a one-liner explaining why and let the calling
-//! stack (sudo, login, …) fall through to its password prompt.
+//! ## Threat model
+//!
+//! When `pam_authenticate` runs, the `.so` is `dlopen`ed inside the
+//! caller's process (sudo, login, gdm, …). At that point the
+//! caller's environment is **attacker-controlled**: a malicious
+//! local user can set arbitrary `DAX_*` variables before invoking
+//! `sudo`. We therefore deliberately ignore every environment
+//! variable in this module and resolve the vault path, models,
+//! camera index and passphrase **only** from root-owned files we
+//! validate up front. The CLI keeps its environment overrides for
+//! development workflows; the PAM module does not.
 
 #![cfg(target_os = "linux")]
 #![allow(unsafe_code)] // Required for the C ABI shim emitted by pam_hooks!.
 
 use std::ffi::CStr;
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
-use dax_runtime::{verify_face, Config, IrCheckOutcome, RuntimeError, VerifyConfig, VerifyReason};
+use dax_runtime::{
+    verify_face, Config, IrCheckOutcome, RuntimeError, VerifyConfig, VerifyReason,
+    SYSTEM_CONFIG_PATH,
+};
 use pam::constants::{PamFlag, PamResultCode};
 use pam::items::User;
 use pam::module::{PamHandle, PamHooks};
 
-const ENV_VAULT: &str = "DAX_VAULT_PATH";
-const ENV_PASSPHRASE: &str = "DAX_VAULT_PASSPHRASE";
-const ENV_DETECTOR: &str = "DAX_DETECTOR_MODEL";
-const ENV_RECOGNIZER: &str = "DAX_RECOGNIZER_MODEL";
-const ENV_LIVENESS: &str = "DAX_LIVENESS_MODEL";
-const ENV_CAMERA: &str = "DAX_CAMERA_DEVICE";
-
 /// Root-owned file holding the vault passphrase. Created at install
-/// time. PAM `.so` files inherit a sanitised env from the parent
-/// process, so reading the passphrase from a 600-perm file under
-/// `/etc/dax-auth/` is the only reliable way to ship it.
+/// time with permissions 0600.
 const SECRET_FILE: &str = "/etc/dax-auth/secret";
 
 struct DaxPam;
@@ -47,8 +49,12 @@ impl PamHooks for DaxPam {
             Ok(u) => u,
             Err(code) => return code,
         };
-        let Ok(env) = read_env() else {
-            return PamResultCode::PAM_AUTH_ERR;
+        let env = match load_environment() {
+            Ok(env) => env,
+            Err(reason) => {
+                err(format_args!("config error: {reason}"));
+                return PamResultCode::PAM_AUTH_ERR;
+            }
         };
 
         let config = VerifyConfig {
@@ -60,7 +66,7 @@ impl PamHooks for DaxPam {
             detector_path: &env.detector,
             recognizer_path: &env.recognizer,
             liveness_path: &env.liveness,
-            match_threshold: dax_runtime::DEFAULT_MATCH_THRESHOLD,
+            match_threshold: env.match_threshold,
             ir_center_tolerance: dax_runtime::DEFAULT_IR_CENTER_TOLERANCE,
         };
 
@@ -130,56 +136,61 @@ struct PamEnv {
     liveness: PathBuf,
     camera: u32,
     ir_camera: Option<u32>,
+    match_threshold: f32,
 }
 
-fn read_env() -> Result<PamEnv, String> {
-    let env_vault = std::env::var(ENV_VAULT).ok();
-    let env_passphrase = std::env::var(ENV_PASSPHRASE).ok();
-    let env_detector = std::env::var(ENV_DETECTOR).ok();
-    let env_recognizer = std::env::var(ENV_RECOGNIZER).ok();
-    let env_liveness = std::env::var(ENV_LIVENESS).ok();
-    let env_camera = std::env::var(ENV_CAMERA)
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok());
+/// Load configuration from root-owned files. **Never** consults the
+/// process environment: the caller of `sudo` controls those vars.
+fn load_environment() -> Result<PamEnv, String> {
+    let config_path = Path::new(SYSTEM_CONFIG_PATH);
+    require_root_owned(config_path, 0o022)?;
+    let config = Config::load_from(config_path).map_err(|e| format!("{e}"))?;
 
-    let config = Config::load_system().ok().flatten();
-    let secret = std::fs::read_to_string(SECRET_FILE)
-        .ok()
-        .map(|s| s.trim_end_matches('\n').to_string());
-
-    let vault = env_vault
-        .map(PathBuf::from)
-        .or_else(|| config.as_ref().map(|c| c.paths.vault.clone()))
-        .ok_or_else(|| format!("vault path ({ENV_VAULT} or config.toml)"))?;
-    let detector = env_detector
-        .map(PathBuf::from)
-        .or_else(|| config.as_ref().map(|c| c.paths.detector.clone()))
-        .ok_or_else(|| format!("detector model ({ENV_DETECTOR} or config.toml)"))?;
-    let recognizer = env_recognizer
-        .map(PathBuf::from)
-        .or_else(|| config.as_ref().map(|c| c.paths.recognizer.clone()))
-        .ok_or_else(|| format!("recognizer model ({ENV_RECOGNIZER} or config.toml)"))?;
-    let liveness = env_liveness
-        .map(PathBuf::from)
-        .or_else(|| config.as_ref().map(|c| c.paths.liveness.clone()))
-        .ok_or_else(|| format!("liveness model ({ENV_LIVENESS} or config.toml)"))?;
-    let camera = env_camera
-        .or_else(|| config.as_ref().map(|c| c.camera.rgb_device))
-        .unwrap_or(0);
-    let ir_camera = config.as_ref().and_then(|c| c.camera.ir_device);
-    let passphrase = env_passphrase
-        .or(secret)
-        .ok_or_else(|| format!("vault passphrase ({ENV_PASSPHRASE} or {SECRET_FILE})"))?;
+    let secret_path = Path::new(SECRET_FILE);
+    // Anything more permissive than 0600 means the secret has leaked
+    // to a non-root account; refuse to use it.
+    require_root_owned(secret_path, 0o077)?;
+    let passphrase = std::fs::read_to_string(secret_path)
+        .map_err(|e| format!("read secret: {e}"))?
+        .trim_end_matches('\n')
+        .to_string();
+    if passphrase.is_empty() {
+        return Err(String::from("secret file is empty"));
+    }
 
     Ok(PamEnv {
-        vault,
+        vault: config.paths.vault,
         passphrase,
-        detector,
-        recognizer,
-        liveness,
-        camera,
-        ir_camera,
+        detector: config.paths.detector,
+        recognizer: config.paths.recognizer,
+        liveness: config.paths.liveness,
+        camera: config.camera.rgb_device,
+        ir_camera: config.camera.ir_device,
+        match_threshold: config.security.match_threshold,
     })
+}
+
+/// Validate that `path` is owned by root and that no bit in
+/// `forbidden_mask` is set in the file mode. `forbidden_mask = 0o022`
+/// rejects group/other write; `0o077` rejects any group/other access
+/// at all (used for the secret).
+fn require_root_owned(path: &Path, forbidden_mask: u32) -> Result<(), String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
+    if meta.uid() != 0 {
+        return Err(format!(
+            "{} is not owned by root (uid={})",
+            path.display(),
+            meta.uid()
+        ));
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & forbidden_mask != 0 {
+        return Err(format!(
+            "{} has insecure permissions 0o{mode:o}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Render the IR cross-check result as a status-line suffix.

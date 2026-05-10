@@ -189,6 +189,51 @@ The reference machine is an ASUS laptop with two webcams enumerated as four V4L2
 - **MiniFASNetV2 emits three classes**, not two. The first integration mapped `probs[1]` and `probs[0]` and quietly returned `LIVE` for replay attacks; the fix was to sum every non-real class into a single `spoof_prob`.
 - **Reading `nalgebra` matrix `Debug` output**: it is column-major. During Phase 3 a working transform looked broken because a manual hand-check was reading it as row-major.
 
+## Security model and known caveats
+
+The PAM module operates under a hostile-environment threat model:
+when `pam_authenticate` runs, the calling process (sudo, login, …)
+still holds the original user's environment, so any `DAX_*`
+variable a local attacker sets is observable. `dax-pam` therefore
+**never** consults `std::env`. It loads everything (paths, camera
+indices, threshold, passphrase) from `/etc/dax-auth/config.toml`
+and `/etc/dax-auth/secret`, both validated to be `root`-owned and
+not group/world-writable before being read. The CLI keeps env-var
+overrides because its threat model is the inverse: the user IS the
+operator.
+
+Key knobs that affect security:
+
+- `match_threshold` (default 0.6, came from ArcFace's calibrated
+  FAR ≲ 1e-5 zone). `dax-pam` reads it from the config file and
+  passes it through; lowering it relaxes verify but raises false
+  accepts.
+- `ir_device` in `[camera]` enables Hello-grade RGB↔IR cross-check.
+  When set, a frame must show a face in BOTH sensors at the same
+  approximate normalised position; phones, photos and screens fail
+  because they do not reflect IR like skin.
+- Argon2id parameters live in `dax-store::crypto::derive_key`
+  (currently 64 MiB / 3 iterations / 4 lanes — the RFC 9106
+  baseline). Operators on tiny hardware can soften them but the
+  defaults aim for ~100 ms unlock cost.
+
+### Caveat: single-frame passive liveness
+
+When the host has no IR sensor, anti-spoofing falls back entirely
+to MiniFASNetV2 over a single RGB frame. That detector is robust
+against printed photos and casual screen replays but is **not** an
+adequate defence against:
+
+- High-resolution video of the user replayed on a good OLED
+- Realistic latex / silicone masks
+- Real-time deepfake renderers
+
+The README must be explicit about this limitation. The roadmap
+entry to harden it is **multi-frame liveness**: capture N frames
+in a short window, require liveness on each, and require enough
+inter-frame embedding variance to rule out a paused photo. We
+have not implemented that yet.
+
 ## Where to extend
 
 - **Cross-check IR/RGB liveness**: capture both streams nearly simultaneously, detect a face on each, and reject if the IR detection disagrees with the RGB bbox. This is the Windows-Hello-grade extension to `dax-liveness`.

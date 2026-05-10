@@ -217,10 +217,18 @@ Models are downloaded at install time and never committed.
 
 ## Security notes
 
-- The vault is encrypted at rest. Wrong passphrases fail closed via the AEAD tag check.
+- The vault is encrypted at rest with Argon2id (RFC 9106 baseline: 64 MiB / 3 iterations / 4 lanes) + ChaCha20-Poly1305. Wrong passphrases fail closed via the AEAD tag check.
+- The PAM module **ignores the process environment**. A local attacker invoking `sudo` cannot redirect the vault, models, camera index, threshold or passphrase via `DAX_*` variables; everything is read from `/etc/dax-auth/config.toml` and `/etc/dax-auth/secret`, both validated to be `root`-owned and not group/world-writable before use.
+- The default cosine threshold is **0.6**, which sits in ArcFace's calibrated FAR ≲ 1e-5 zone. Operators can adjust `[security] match_threshold` in `config.toml`.
 - Liveness is **mandatory** during `verify`: a spoof verdict short-circuits before the embedding is even compared.
-- PAM integration ships as `auth sufficient` only — the password path remains as fallback. **Do not configure `auth required pam_dax.so`** unless you have an out-of-band recovery shell.
-- The current PAM passphrase comes from `DAX_VAULT_PASSPHRASE`; production installs should derive it from a system secret (e.g. `/etc/machine-id` mixed with a root-owned key file).
+- When the host exposes an IR sensor (`[camera] ir_device` in the config), the verify pipeline runs a Hello-grade RGB↔IR cross-check: the face must appear in both sensors at the same approximate position. Phone screens, photos and displays fail this check because they do not reflect near-infrared like human skin.
+- PAM integration ships as `auth sufficient` only — the password path remains as fallback. **Do not configure `auth required libdax_pam.so`** unless you have an out-of-band recovery shell.
+
+### Known limitations
+
+- **Single-frame passive liveness on RGB-only hosts**: a laptop without an IR sensor relies entirely on MiniFASNetV2 against a single RGB frame. That gate stops printed photos and casual screen replays, but it is not adequate against high-resolution OLED videos, realistic silicone masks or real-time deepfake renderers. Multi-frame liveness is on the roadmap.
+- Models (`buffalo_s.zip`, `MiniFASNetV2.onnx`) are downloaded with hard-coded SHA-256 checksums in `scripts/fetch-models.sh`. Drift fails the install. Audit any pinned-hash bump before committing it.
+- The PAM module ships as `cdylib`. Treat it like any other binary in the trust path: build from a clean checkout, verify the resulting hash before installing in `/usr/lib64/security/`.
 
 ## License
 

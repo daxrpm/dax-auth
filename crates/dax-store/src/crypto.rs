@@ -11,10 +11,13 @@ pub const KEY_LEN: usize = 32;
 
 /// Derive a 32-byte key from a passphrase using Argon2id.
 ///
-/// Parameters are chosen to match the OWASP 2024 recommendation
-/// for interactive logins: 19 MiB memory, 2 iterations, 1 lane.
+/// Parameters track the RFC 9106 baseline for second-recommended
+/// option (data-independent memory access is irrelevant for our
+/// threat model, but cost matters): 64 MiB of memory, 3 iterations,
+/// 4 lanes of parallelism. ~100 ms on a modern laptop, hard to
+/// brute-force even with a stolen vault.
 pub fn derive_key(passphrase: &[u8], salt: &[u8]) -> StoreResult<[u8; KEY_LEN]> {
-    let params = Params::new(19 * 1024, 2, 1, Some(KEY_LEN))
+    let params = Params::new(64 * 1024, 3, 4, Some(KEY_LEN))
         .map_err(|e| StoreError::KeyDerivation(e.to_string()))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; KEY_LEN];

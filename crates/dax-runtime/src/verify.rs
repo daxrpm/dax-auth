@@ -15,10 +15,13 @@ use tracing::{debug, info, warn};
 use crate::error::{RuntimeError, RuntimeResult};
 
 /// Default cosine similarity threshold for accepting a verify
-/// attempt. Empirically, frontal snaps of the same subject score
-/// 0.79–0.91, so 0.5 leaves margin for pose variation while
-/// remaining clearly distinguishable from cross-subject pairs.
-pub const DEFAULT_MATCH_THRESHOLD: f32 = 0.5;
+/// attempt. `ArcFace` was calibrated for FAR ≲ 1e-5 around cosine
+/// 0.6–0.7, and frontal snaps of the same subject score 0.79–0.91
+/// in our own logs, so 0.6 keeps comfortable headroom while staying
+/// well above the cross-subject regime (typically < 0.3). Operators
+/// who hit pose-related drops can lower it via
+/// `[security] match_threshold` in `/etc/dax-auth/config.toml`.
+pub const DEFAULT_MATCH_THRESHOLD: f32 = 0.6;
 
 /// Distance tolerance between the RGB and IR face-center positions
 /// after both are normalised to `[0, 1]`. The two sensors sit a few

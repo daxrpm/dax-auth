@@ -39,6 +39,7 @@ pub fn run(args: Args) -> Result<()> {
     );
     verify_cfg.camera_index = cfg.camera_index;
     verify_cfg.ir_camera_index = cfg.ir_camera_index;
+    verify_cfg.match_threshold = cfg.match_threshold;
 
     let outcome = verify_face(&verify_cfg).context("running face verification")?;
 
