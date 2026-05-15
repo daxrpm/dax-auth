@@ -132,7 +132,7 @@ detect_distro() {
             PKG_INSTALL="dnf install -y"
             SECURITY_DIR=/usr/lib64/security
             PAM_DEV_PKG=pam-devel
-            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake openssl-devel policycoreutils) ;;
+            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake openssl-devel policycoreutils curl) ;;
         debian|ubuntu|pop|linuxmint|elementary|raspbian)
             DISTRO_FAMILY=debian
             PKG_MGR=apt
@@ -140,28 +140,28 @@ detect_distro() {
             SECURITY_DIR=/lib/x86_64-linux-gnu/security
             [[ -d /lib/aarch64-linux-gnu/security ]] && SECURITY_DIR=/lib/aarch64-linux-gnu/security
             PAM_DEV_PKG=libpam0g-dev
-            EXTRA_PKGS=(libpam0g-dev v4l-utils pamtester build-essential pkg-config libssl-dev) ;;
+            EXTRA_PKGS=(libpam0g-dev v4l-utils pamtester build-essential pkg-config libssl-dev curl) ;;
         arch|manjaro|endeavouros|garuda)
             DISTRO_FAMILY=arch
             PKG_MGR=pacman
-            PKG_INSTALL="pacman -S --noconfirm"
+            PKG_INSTALL="pacman -S --noconfirm --needed"
             SECURITY_DIR=/usr/lib/security
             PAM_DEV_PKG=pam
-            EXTRA_PKGS=(pam v4l-utils pamtester base-devel) ;;
+            EXTRA_PKGS=(pam v4l-utils pamtester base-devel curl) ;;
         opensuse-leap|opensuse-tumbleweed|sles|suse)
             DISTRO_FAMILY=suse
             PKG_MGR=zypper
             PKG_INSTALL="zypper install -y"
             SECURITY_DIR=/lib64/security
             PAM_DEV_PKG=pam-devel
-            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake libopenssl-devel policycoreutils) ;;
+            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake libopenssl-devel policycoreutils curl) ;;
         alpine)
             DISTRO_FAMILY=alpine
             PKG_MGR=apk
             PKG_INSTALL="apk add"
             SECURITY_DIR=/lib/security
             PAM_DEV_PKG=linux-pam-dev
-            EXTRA_PKGS=(linux-pam-dev v4l-utils build-base) ;;
+            EXTRA_PKGS=(linux-pam-dev v4l-utils build-base curl) ;;
         *)
             DISTRO_FAMILY=unknown
             for candidate in /usr/lib64/security /lib/x86_64-linux-gnu/security /usr/lib/security /lib64/security /lib/security; do
@@ -485,14 +485,89 @@ select_cameras() {
 }
 
 # ─────────────────────────── prerequisites ────────────────────────────
-check_rust() {
-    if ! command -v cargo >/dev/null 2>&1; then
-        err "cargo not found in PATH."
-        note "Install via https://rustup.rs/ — typical command:"
-        note "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        return 1
+distro_rust_packages() {
+    case "$DISTRO_FAMILY" in
+        fedora) echo "rust cargo" ;;
+        debian) echo "rustc cargo" ;;
+        arch)   echo "rust" ;;        # arch's `rust` package includes cargo
+        suse)   echo "rust cargo" ;;
+        alpine) echo "rust cargo" ;;
+        *)      echo "" ;;
+    esac
+}
+
+ensure_rust() {
+    # rustup may have been installed in a previous run but not yet on
+    # PATH for this shell — source its env file before deciding.
+    if [[ -z "${CARGO_HOME:-}" && -f "$HOME/.cargo/env" ]]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.cargo/env"
     fi
-    ok "cargo $(cargo --version | awk '{print $2}')"
+
+    if command -v cargo >/dev/null 2>&1; then
+        ok "cargo $(cargo --version | awk '{print $2}')"
+        return 0
+    fi
+
+    heading "Rust toolchain"
+    warn "Rust not found in PATH."
+    local repo_pkgs
+    repo_pkgs="$(distro_rust_packages)"
+    note "Options:"
+    if [[ -n "$repo_pkgs" ]]; then
+        note "  1) Install '$repo_pkgs' via $PKG_MGR — distro package, may lag behind upstream"
+    else
+        note "  1) (no known distro package for $DISTRO_FAMILY)"
+    fi
+    note "  2) Install rustup (recommended — official, always latest stable)"
+    note "  3) Abort and install manually"
+
+    local default_choice=2
+    [[ -z "$repo_pkgs" ]] && default_choice=2
+    local choice
+    choice="$(ask "Pick [1/2/3]" "$default_choice")"
+
+    case "$choice" in
+        1)
+            if [[ -z "$repo_pkgs" ]]; then
+                abort "No distro package known for $DISTRO_FAMILY — pick 2 (rustup) instead."
+            fi
+            substep "Installing $repo_pkgs via $PKG_MGR"
+            # shellcheck disable=SC2086
+            run_root $PKG_INSTALL $repo_pkgs || abort "Failed to install Rust via $PKG_MGR."
+            ;;
+        2)
+            if ! command -v curl >/dev/null 2>&1; then
+                if [[ -n "$PKG_MGR" ]]; then
+                    substep "Installing curl (needed to fetch rustup)"
+                    # shellcheck disable=SC2086
+                    run_root $PKG_INSTALL curl || abort "Could not install curl."
+                else
+                    abort "curl is required to fetch rustup; install it and re-run."
+                fi
+            fi
+            substep "Downloading rustup-init"
+            note "Command: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable"
+            confirm "Run rustup-init now?" || abort "User declined rustup install."
+            # Run as the invoking user, never as root — cargo/toolchains
+            # belong in the user's $HOME, not /root.
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain stable --profile minimal \
+                || abort "rustup-init failed."
+            if [[ -f "$HOME/.cargo/env" ]]; then
+                # shellcheck disable=SC1091
+                . "$HOME/.cargo/env"
+            fi
+            ;;
+        3|*)
+            abort "Rust toolchain required. Install it and re-run the installer."
+            ;;
+    esac
+
+    if ! command -v cargo >/dev/null 2>&1; then
+        abort "cargo still not in PATH after install. Open a new shell ('source ~/.cargo/env' if you picked rustup) and re-run."
+    fi
+    ok "cargo $(cargo --version | awk '{print $2}') ready"
 }
 
 offer_distro_deps() {
@@ -613,11 +688,16 @@ apply_selinux_contexts() {
 }
 
 action_install() {
-    check_rust || abort "Install Rust first."
+    # Order matters:
+    #   1. Distro deps first so curl/v4l-utils/policycoreutils land
+    #      before anything that needs them.
+    #   2. Rust next — may be installed via the same $PKG_MGR or via
+    #      rustup (which needs curl from step 1).
+    #   3. Re-probe cameras only after v4l-utils was potentially added.
+    #   4. Build, fetch models, let the user pick the cameras, then
+    #      copy everything to the system paths.
     offer_distro_deps
-    # If the first detection ran before v4l-utils was installed,
-    # HW_DETECTED stayed at 0 and the device lists are empty. Re-probe
-    # now that the package manager step has had a chance to add it.
+    ensure_rust
     if (( ${HW_DETECTED:-0} == 0 )) && command -v v4l2-ctl >/dev/null 2>&1; then
         substep "Re-probing cameras now that v4l-utils is available"
         detect_hardware
