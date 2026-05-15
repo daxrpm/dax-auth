@@ -132,7 +132,7 @@ detect_distro() {
             PKG_INSTALL="dnf install -y"
             SECURITY_DIR=/usr/lib64/security
             PAM_DEV_PKG=pam-devel
-            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake openssl-devel) ;;
+            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake openssl-devel policycoreutils) ;;
         debian|ubuntu|pop|linuxmint|elementary|raspbian)
             DISTRO_FAMILY=debian
             PKG_MGR=apt
@@ -154,7 +154,7 @@ detect_distro() {
             PKG_INSTALL="zypper install -y"
             SECURITY_DIR=/lib64/security
             PAM_DEV_PKG=pam-devel
-            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake libopenssl-devel) ;;
+            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake libopenssl-devel policycoreutils) ;;
         alpine)
             DISTRO_FAMILY=alpine
             PKG_MGR=apk
@@ -180,13 +180,19 @@ detect_hardware() {
     HW_RGB_DEVICES=()
     HW_IR_DEVICES=()
     HW_NON_CAPTURE=()
+    HW_RGB_SELECTED=""
+    HW_IR_SELECTED=""
+    HW_DETECTED=0
     if ! command -v v4l2-ctl >/dev/null 2>&1; then
         warn "v4l2-ctl not available; skipping hardware detection."
         warn "Install v4l-utils to let the installer probe your cameras."
         return 0
     fi
+    HW_DETECTED=1
 
     local node desc formats fourccs is_ir has_color has_grey
+    local vendor model product hint_blob udev_kv
+    local max_w max_h res_lines w h
     for node in /dev/video*; do
         [[ -c "$node" ]] || continue
 
@@ -202,47 +208,86 @@ detect_hardware() {
             | sed -n 's/^[[:space:]]*Card type[[:space:]]*:[[:space:]]*//p' | head -n1)"
         desc="${desc:-unknown}"
 
-        # FourCCs the device exposes (e.g. GREY, YUYV, MJPG).
+        # FourCCs the device exposes (e.g. GREY, YUYV, MJPG, Y8I, Z16).
         fourccs="$(v4l2-ctl --device="$node" --list-formats 2>/dev/null \
             | awk -F"'" '/\[[0-9]+\]:/ {print $2}' | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
         if [[ -z "$fourccs" ]]; then
-            # Companion / metadata node: keep it visible so the user
-            # understands why the index is "skipped".
-            if grep -qiE '\b(ir|infrared)\b' <<<"$desc"; then
-                HW_NON_CAPTURE+=("$node ($desc, no streamable formats)")
-            else
-                HW_NON_CAPTURE+=("$node ($desc, no streamable formats)")
-            fi
+            HW_NON_CAPTURE+=("$node ($desc, no streamable formats)")
             continue
         fi
         formats="$(echo "$fourccs" | tr ' ' ',')"
 
+        # udev exposes vendor/model the kernel resolved for the USB or
+        # CSI device — far more useful than `Card type` on multi-sensor
+        # cams (HP Wide Vision, Chicony, Realtek, Quanta, IMC).
+        vendor=""; model=""; product=""
+        if command -v udevadm >/dev/null 2>&1; then
+            udev_kv="$(udevadm info --query=property --name="$node" 2>/dev/null || true)"
+            vendor="$(printf '%s\n' "$udev_kv" | sed -n 's/^ID_VENDOR=//p' | head -n1)"
+            model="$(printf '%s\n' "$udev_kv"  | sed -n 's/^ID_MODEL=//p'  | head -n1)"
+            product="$(printf '%s\n' "$udev_kv" | sed -n 's/^ID_V4L_PRODUCT=//p' | head -n1)"
+        fi
+
+        # Largest advertised resolution. IR sensors typically top out at
+        # 640x480 or 1280x720 and never expose 1080p+ formats.
+        max_w=0; max_h=0
+        res_lines="$(v4l2-ctl --device="$node" --list-formats-ext 2>/dev/null \
+            | awk '/Size: Discrete/ {print $3}' | tr 'x' ' ')"
+        if [[ -n "$res_lines" ]]; then
+            while read -r w h; do
+                [[ "${w:-}" =~ ^[0-9]+$ && "${h:-}" =~ ^[0-9]+$ ]] || continue
+                if (( w * h > max_w * max_h )); then
+                    max_w=$w; max_h=$h
+                fi
+            done <<<"$res_lines"
+        fi
+
         # Heuristics, in priority order:
-        #   1. Description mentions "IR" / "infrared".
-        #   2. Only grayscale formats exposed (typical of Hello-class IR sensors).
+        #   1. Description, vendor, model, or product mention IR /
+        #      infrared / hello / NIR / emitter — most reliable.
+        #   2. Only grayscale formats exposed (every Hello-class IR
+        #      sensor in the wild — Chicony, Realtek, IMC, Quanta,
+        #      Intel RealSense — sits in this bucket).
+        #   3. Max resolution <= 1280x720 with both grayscale AND a
+        #      tiny pseudo-color FourCC (some HP/Lenovo sensors expose
+        #      a fake YUYV alongside Y8 to keep generic UVC stacks
+        #      happy). RGB webcams in 2024 expose 1080p+.
+        hint_blob="$desc $vendor $model $product"
         is_ir=0
-        if grep -qiE '\b(ir|infrared)\b' <<<"$desc"; then
+        if grep -qiE '(\bir\b|infrared|\bnir\b|hello|emitter)' <<<"$hint_blob"; then
             is_ir=1
         else
             has_color=0; has_grey=0
             for fcc in $fourccs; do
                 case "$fcc" in
-                    GREY|Y8|Y16|Y10) has_grey=1 ;;
-                    YUYV|MJPG|NV12|RGB*|BGR*|UYVY|YV12|YU12|H264) has_color=1 ;;
+                    GREY|Y8|Y8I|Y10|"Y10 "|Y12|Y12I|Y16|Y16I|Z16|INVZ|INZI|RW10|RW12) has_grey=1 ;;
+                    YUYV|MJPG|NV12|NV21|RGB*|BGR*|UYVY|YV12|YU12|H264|H265|HEVC|HEV1|VP8|VP9|JPEG) has_color=1 ;;
                 esac
             done
             if (( has_grey == 1 && has_color == 0 )); then
                 is_ir=1
+            elif (( has_grey == 1 && has_color == 1 && max_w > 0 && max_w * max_h <= 1280 * 720 )); then
+                is_ir=1
             fi
         fi
 
+        local entry="$node|$desc|${vendor:-?}|${model:-?}|$formats|${max_w}x${max_h}"
         if (( is_ir == 1 )); then
-            HW_IR_DEVICES+=("$node|$desc|$formats")
+            HW_IR_DEVICES+=("$entry")
         else
-            HW_RGB_DEVICES+=("$node|$desc|$formats")
+            HW_RGB_DEVICES+=("$entry")
         fi
     done
 }
+
+# Field accessors so consumers don't need to know the entry layout.
+hw_field() { awk -F'|' -v n="$2" '{print $n}' <<<"$1"; }
+hw_node()    { hw_field "$1" 1; }
+hw_desc()    { hw_field "$1" 2; }
+hw_vendor()  { hw_field "$1" 3; }
+hw_model()   { hw_field "$1" 4; }
+hw_formats() { hw_field "$1" 5; }
+hw_maxres()  { hw_field "$1" 6; }
 
 print_banner() {
     cat <<EOF
@@ -262,23 +307,19 @@ print_environment() {
     note "PAM directory   : $SECURITY_DIR"
     if (( ${#HW_RGB_DEVICES[@]} > 0 )); then
         ok "RGB cameras (${#HW_RGB_DEVICES[@]}):"
-        local IFS='|'; local node desc fmt
+        local d
         for d in "${HW_RGB_DEVICES[@]}"; do
-            read -r node desc fmt <<<"$d"
-            note "  $node  ·  $desc  ·  formats=$fmt"
+            note "  $(hw_node "$d")  ·  $(hw_desc "$d")  ·  $(hw_vendor "$d")/$(hw_model "$d")  ·  formats=$(hw_formats "$d")  ·  max=$(hw_maxres "$d")"
         done
-        unset IFS
     else
         warn "No RGB camera detected. The pipeline will not work without one."
     fi
     if (( ${#HW_IR_DEVICES[@]} > 0 )); then
         ok "IR cameras (${#HW_IR_DEVICES[@]}):"
-        local IFS='|'; local node desc fmt
+        local d
         for d in "${HW_IR_DEVICES[@]}"; do
-            read -r node desc fmt <<<"$d"
-            note "  $node  ·  $desc  ·  formats=$fmt"
+            note "  $(hw_node "$d")  ·  $(hw_desc "$d")  ·  $(hw_vendor "$d")/$(hw_model "$d")  ·  formats=$(hw_formats "$d")  ·  max=$(hw_maxres "$d")"
         done
-        unset IFS
         note "The pipeline runs RGB-only today; IR is recorded in config for future cross-check."
     else
         note "No IR sensor detected — the pipeline runs RGB-only, that's fine."
@@ -286,6 +327,160 @@ print_environment() {
     if (( ${#HW_NON_CAPTURE[@]} > 0 )); then
         note "Non-capture / companion nodes (skipped):"
         for n in "${HW_NON_CAPTURE[@]}"; do note "  $n"; done
+    fi
+}
+
+# ─────────────────────────── camera selection ────────────────────────────
+# Auto-detection on diverse hardware is best-effort. When the heuristics
+# leave any ambiguity (multiple RGB devices, more than one IR candidate,
+# possibly-misclassified sensors), we surface the options and let the
+# user pick. Single-candidate cases keep working without prompting so
+# the happy path stays unattended.
+
+print_camera_choices() {
+    local devices=("$@")
+    local i=1 d node desc vendor model fmt res
+    for d in "${devices[@]}"; do
+        node="$(hw_node "$d")"
+        desc="$(hw_desc "$d")"
+        vendor="$(hw_vendor "$d")"
+        model="$(hw_model "$d")"
+        fmt="$(hw_formats "$d")"
+        res="$(hw_maxres "$d")"
+        printf "    %d) %s  ·  %s  ·  %s/%s  ·  formats=%s  ·  max=%s\n" \
+            "$i" "$node" "$desc" "$vendor" "$model" "$fmt" "$res" >&2
+        i=$((i+1))
+    done
+}
+
+choose_camera() {
+    # choose_camera <label> <allow_skip:0|1> <device entries...>
+    # Writes the chosen /dev/videoN node to stdout (empty when skipped).
+    local label="$1" allow_skip="$2"; shift 2
+    local devices=("$@")
+    local count="${#devices[@]}"
+    if (( count == 0 )); then
+        echo ""
+        return 0
+    fi
+    if (( count == 1 )); then
+        hw_node "${devices[0]}"
+        return 0
+    fi
+    note "Multiple $label candidates detected — pick one:" >&2
+    print_camera_choices "${devices[@]}"
+    local low=1 prompt
+    if (( allow_skip == 1 )); then
+        low=0
+        prompt="Pick a $label camera [0=skip, 1-$count]"
+    else
+        prompt="Pick a $label camera [1-$count]"
+    fi
+    local pick
+    pick="$(ask "$prompt" "1")"
+    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < low || pick > count )); then
+        warn "Invalid choice '$pick'; defaulting to 1"
+        pick=1
+    fi
+    if (( pick == 0 )); then
+        echo ""
+        return 0
+    fi
+    hw_node "${devices[$((pick-1))]}"
+}
+
+find_entry_by_node() {
+    # find_entry_by_node <node> <entries...>
+    local node="$1"; shift
+    local d
+    for d in "$@"; do
+        if [[ "$(hw_node "$d")" == "$node" ]]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+test_capture() {
+    # test_capture <node> [entry]
+    # Many webcams (especially older UVC ones outside the ASUS Sonix
+    # family) refuse `--stream-mmap` until a format is set. We pass the
+    # first advertised FourCC + max resolution from the detected entry
+    # so the test mirrors what dax-capture will actually negotiate.
+    local node="$1" entry="${2:-}"
+    local fourcc="" width="" height=""
+    if [[ -n "$entry" ]]; then
+        fourcc="$(hw_formats "$entry" | cut -d',' -f1)"
+        local maxres
+        maxres="$(hw_maxres "$entry")"
+        width="${maxres%x*}"
+        height="${maxres#*x}"
+    fi
+
+    local tmp args
+    tmp="$(mktemp --suffix=.raw)"
+    args=(--device="$node")
+    if [[ -n "$fourcc" && "${width:-0}" -gt 0 && "${height:-0}" -gt 0 ]]; then
+        args+=(--set-fmt-video="width=$width,height=$height,pixelformat=$fourcc")
+    fi
+    args+=(--stream-mmap=1 --stream-count=1 --stream-to="$tmp")
+
+    if v4l2-ctl "${args[@]}" >>"$LOG_FILE" 2>&1; then
+        local sz
+        sz="$(stat -c %s "$tmp" 2>/dev/null || echo 0)"
+        rm -f "$tmp"
+        if (( sz > 0 )); then
+            ok "$node captured a $sz-byte frame${fourcc:+ ($fourcc ${width}x${height})}."
+            return 0
+        fi
+    fi
+    rm -f "$tmp"
+    warn "$node refused to deliver a frame (busy? permissions? wrong sensor?). See $LOG_FILE."
+    return 1
+}
+
+select_cameras() {
+    heading "Camera selection"
+    if (( ${#HW_RGB_DEVICES[@]} == 0 )); then
+        warn "No RGB camera detected. enroll/verify will not work until you plug one in."
+        HW_RGB_SELECTED=""
+    else
+        HW_RGB_SELECTED="$(choose_camera "RGB" 0 "${HW_RGB_DEVICES[@]}")"
+        [[ -n "$HW_RGB_SELECTED" ]] && ok "RGB camera: $HW_RGB_SELECTED"
+    fi
+
+    if (( ${#HW_IR_DEVICES[@]} == 0 )); then
+        note "No IR sensor — leaving ir_device commented in the config."
+        HW_IR_SELECTED=""
+    else
+        HW_IR_SELECTED="$(choose_camera "IR" 1 "${HW_IR_DEVICES[@]}")"
+        if [[ -n "$HW_IR_SELECTED" ]]; then
+            ok "IR camera: $HW_IR_SELECTED"
+        else
+            note "IR skipped — the pipeline will run RGB-only."
+        fi
+    fi
+
+    if ! command -v v4l2-ctl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [[ -n "$HW_RGB_SELECTED" ]]; then
+        if confirm "Run a 1-frame capture test on $HW_RGB_SELECTED (RGB) to confirm it works?"; then
+            local rgb_entry
+            rgb_entry="$(find_entry_by_node "$HW_RGB_SELECTED" "${HW_RGB_DEVICES[@]}" || true)"
+            test_capture "$HW_RGB_SELECTED" "$rgb_entry" || \
+                warn "Continuing anyway — fix the capture issue before running 'daxauth enroll'."
+        fi
+    fi
+    if [[ -n "$HW_IR_SELECTED" ]]; then
+        if confirm "Also test-capture from $HW_IR_SELECTED (IR)?"; then
+            local ir_entry
+            ir_entry="$(find_entry_by_node "$HW_IR_SELECTED" "${HW_IR_DEVICES[@]}" || true)"
+            test_capture "$HW_IR_SELECTED" "$ir_entry" || \
+                warn "IR test failed — leave ir_device commented in the config if it keeps misbehaving."
+        fi
     fi
 }
 
@@ -350,12 +545,19 @@ ensure_models() {
 # ─────────────────────────── install / config ────────────────────────────
 generate_config() {
     local rgb_dev=0 ir_line="# ir_device = 2   # no IR sensor was detected; uncomment when you add one"
-    if (( ${#HW_RGB_DEVICES[@]} > 0 )); then
-        rgb_dev="$(echo "${HW_RGB_DEVICES[0]}" | awk -F'|' '{print $1}' | sed 's|/dev/video||')"
+    # Prefer the user's selection from select_cameras(); fall back to
+    # the first auto-detected device so a re-run that doesn't pass
+    # through the menu (e.g. action_verify) still produces a config.
+    if [[ -n "${HW_RGB_SELECTED:-}" ]]; then
+        rgb_dev="${HW_RGB_SELECTED#/dev/video}"
+    elif (( ${#HW_RGB_DEVICES[@]} > 0 )); then
+        rgb_dev="$(hw_node "${HW_RGB_DEVICES[0]}" | sed 's|/dev/video||')"
     fi
-    if (( ${#HW_IR_DEVICES[@]} > 0 )); then
+    if [[ -n "${HW_IR_SELECTED:-}" ]]; then
+        ir_line="ir_device = ${HW_IR_SELECTED#/dev/video}"
+    elif (( ${#HW_IR_DEVICES[@]} > 0 )); then
         local ir_dev
-        ir_dev="$(echo "${HW_IR_DEVICES[0]}" | awk -F'|' '{print $1}' | sed 's|/dev/video||')"
+        ir_dev="$(hw_node "${HW_IR_DEVICES[0]}" | sed 's|/dev/video||')"
         ir_line="ir_device = $ir_dev"
     fi
     cat <<EOF
@@ -386,11 +588,44 @@ generate_secret() {
     fi
 }
 
+apply_selinux_contexts() {
+    # On Fedora/RHEL/CentOS/Rocky and others with SELinux enforcing,
+    # files dropped via `install(1)` keep the source context (often
+    # `unconfined_u:object_r:user_home_t`). PAM refuses to load a
+    # `.so` whose context is not the expected `lib_t`/`textrel_shlib_t`
+    # and the error surfaced by `pam_authenticate` is the unhelpful
+    # "module is unknown". `restorecon` re-applies the policy's default
+    # for the destination path, which is what we want for the binary,
+    # the cdylib, the models and the config dir.
+    command -v getenforce >/dev/null 2>&1 || return 0
+    local mode
+    mode="$(getenforce 2>/dev/null || echo Disabled)"
+    [[ "$mode" == "Disabled" ]] && return 0
+    if ! command -v restorecon >/dev/null 2>&1; then
+        warn "SELinux is $mode but restorecon is missing — install policycoreutils."
+        warn "Without it the PAM module will fail to load with 'module is unknown'."
+        return 0
+    fi
+    substep "Restoring SELinux contexts (mode=$mode)"
+    run_root restorecon -RFv "$INSTALL_LIB" "$INSTALL_BIN" "$INSTALL_SHARE" "$INSTALL_CONFIG_DIR" "$INSTALL_VAULT_DIR" >>"$LOG_FILE" 2>&1 || \
+        warn "restorecon reported errors; see $LOG_FILE."
+    ok "SELinux contexts applied."
+}
+
 action_install() {
     check_rust || abort "Install Rust first."
     offer_distro_deps
+    # If the first detection ran before v4l-utils was installed,
+    # HW_DETECTED stayed at 0 and the device lists are empty. Re-probe
+    # now that the package manager step has had a chance to add it.
+    if (( ${HW_DETECTED:-0} == 0 )) && command -v v4l2-ctl >/dev/null 2>&1; then
+        substep "Re-probing cameras now that v4l-utils is available"
+        detect_hardware
+        print_environment
+    fi
     ensure_release_built
     ensure_models
+    select_cameras
 
     heading "Installation plan"
     cat <<EOF
@@ -444,6 +679,8 @@ EOF
 
     substep "Creating vault directory"
     run_root install -d -m 0700 -o root -g root "$INSTALL_VAULT_DIR"
+
+    apply_selinux_contexts
 
     ok "Files in place."
     action_verify || true
