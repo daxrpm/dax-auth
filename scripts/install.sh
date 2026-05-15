@@ -132,7 +132,9 @@ detect_distro() {
             PKG_INSTALL="dnf install -y"
             SECURITY_DIR=/usr/lib64/security
             PAM_DEV_PKG=pam-devel
-            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake openssl-devel policycoreutils curl) ;;
+            # clang-devel + kernel-headers are required by v4l2-sys-mit's
+            # build.rs, which runs bindgen against /usr/include/linux/videodev2.h.
+            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake openssl-devel policycoreutils curl clang-devel kernel-headers) ;;
         debian|ubuntu|pop|linuxmint|elementary|raspbian)
             DISTRO_FAMILY=debian
             PKG_MGR=apt
@@ -140,28 +142,32 @@ detect_distro() {
             SECURITY_DIR=/lib/x86_64-linux-gnu/security
             [[ -d /lib/aarch64-linux-gnu/security ]] && SECURITY_DIR=/lib/aarch64-linux-gnu/security
             PAM_DEV_PKG=libpam0g-dev
-            EXTRA_PKGS=(libpam0g-dev v4l-utils pamtester build-essential pkg-config libssl-dev curl) ;;
+            # libclang-dev + linux-libc-dev for v4l2-sys-mit bindgen.
+            EXTRA_PKGS=(libpam0g-dev v4l-utils pamtester build-essential pkg-config libssl-dev curl libclang-dev linux-libc-dev) ;;
         arch|manjaro|endeavouros|garuda)
             DISTRO_FAMILY=arch
             PKG_MGR=pacman
             PKG_INSTALL="pacman -S --noconfirm --needed"
             SECURITY_DIR=/usr/lib/security
             PAM_DEV_PKG=pam
-            EXTRA_PKGS=(pam v4l-utils pamtester base-devel curl) ;;
+            # clang ships libclang; linux-api-headers ships videodev2.h.
+            EXTRA_PKGS=(pam v4l-utils pamtester base-devel curl clang linux-api-headers) ;;
         opensuse-leap|opensuse-tumbleweed|sles|suse)
             DISTRO_FAMILY=suse
             PKG_MGR=zypper
             PKG_INSTALL="zypper install -y"
             SECURITY_DIR=/lib64/security
             PAM_DEV_PKG=pam-devel
-            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake libopenssl-devel policycoreutils curl) ;;
+            # clang-devel + linux-glibc-devel (ships /usr/include/linux/*).
+            EXTRA_PKGS=(pam-devel v4l-utils pamtester gcc cmake libopenssl-devel policycoreutils curl clang-devel linux-glibc-devel) ;;
         alpine)
             DISTRO_FAMILY=alpine
             PKG_MGR=apk
             PKG_INSTALL="apk add"
             SECURITY_DIR=/lib/security
             PAM_DEV_PKG=linux-pam-dev
-            EXTRA_PKGS=(linux-pam-dev v4l-utils build-base curl) ;;
+            # clang-dev + linux-headers for bindgen.
+            EXTRA_PKGS=(linux-pam-dev v4l-utils build-base curl clang-dev linux-headers) ;;
         *)
             DISTRO_FAMILY=unknown
             for candidate in /usr/lib64/security /lib/x86_64-linux-gnu/security /usr/lib/security /lib64/security /lib/security; do
@@ -586,14 +592,47 @@ offer_distro_deps() {
     fi
 }
 
+preflight_build_deps() {
+    # Catch the most common build failure (v4l2-sys-mit bindgen against
+    # videodev2.h, ort linking against C++ libs) BEFORE cargo prints
+    # 200 lines of build-script output. Lots of users land here with
+    # only `gcc` installed and no clang.
+    local missing=()
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+        missing+=("C compiler (gcc/cc)")
+    fi
+    if ! command -v pkg-config >/dev/null 2>&1; then
+        missing+=("pkg-config")
+    fi
+    if ! ldconfig -p 2>/dev/null | grep -q 'libclang' \
+       && ! find /usr/lib* /usr/local/lib* -maxdepth 4 -name 'libclang*.so*' 2>/dev/null | grep -q .; then
+        missing+=("libclang (bindgen needs it — clang-devel / libclang-dev / clang)")
+    fi
+    if [[ ! -f /usr/include/linux/videodev2.h ]]; then
+        missing+=("/usr/include/linux/videodev2.h (kernel-headers / linux-libc-dev / linux-api-headers)")
+    fi
+    (( ${#missing[@]} == 0 )) && return 0
+
+    warn "Preflight: cargo build is about to fail without these:"
+    local m
+    for m in "${missing[@]}"; do note "  - $m"; done
+    if [[ -n "$PKG_MGR" ]] && confirm "Install the recommended packages for $DISTRO_NAME now?"; then
+        # shellcheck disable=SC2086
+        run_root $PKG_INSTALL "${EXTRA_PKGS[@]}" || warn "Some packages failed; build may still fail."
+    else
+        warn "Skipped — cargo build will likely error on v4l2-sys-mit or bindgen."
+    fi
+}
+
 ensure_release_built() {
     if [[ -x "$RELEASE_BIN" && -f "$RELEASE_LIB" ]]; then
         ok "Release artefacts already built."
         return 0
     fi
     warn "Release binary or cdylib missing."
+    preflight_build_deps
     if confirm "Build them now (cargo build --release -p dax-cli -p dax-pam)?"; then
-        (cd "$REPO_ROOT" && cargo build --release -p dax-cli -p dax-pam) || abort "Cargo build failed."
+        (cd "$REPO_ROOT" && cargo build --release -p dax-cli -p dax-pam) || abort "Cargo build failed — see the output above. Most common cause on Fedora/RHEL: missing 'clang-devel' or 'kernel-headers'."
         ok "Build complete."
     else
         abort "Cannot install without the release artefacts."
